@@ -134,7 +134,7 @@ namespace FjWorkerService1.BackgroundServices {
 
         private async Task SafeCleanupLogsAsync(CancellationToken stoppingToken) {
             try {
-                var thresholdUtc = DateTime.Now - LogRetention;
+                var threshold = DateTime.Now - LogRetention;
 
                 var scannedCount = 0;
                 var deletedCount = 0;
@@ -150,8 +150,8 @@ namespace FjWorkerService1.BackgroundServices {
                     scannedCount++;
 
                     try {
-                        var lastWriteUtc = File.GetLastWriteTimeUtc(filePath);
-                        if (lastWriteUtc >= thresholdUtc) {
+                        var lastWrite = File.GetLastWriteTime(filePath);
+                        if (lastWrite >= threshold) {
                             continue;
                         }
 
@@ -170,10 +170,10 @@ namespace FjWorkerService1.BackgroundServices {
                 }
 
                 _logger.LogInformation(
-                    "日志清理完成，扫描文件数={Scanned}，删除文件数={Deleted}，阈值时间(UTC)={ThresholdUtc}，目录={Path}",
+                    "日志清理完成，扫描文件数={Scanned}，删除文件数={Deleted}，阈值时间(UTC)={Threshold}，目录={Path}",
                     scannedCount,
                     deletedCount,
-                    thresholdUtc,
+                    threshold,
                     _logsDirectoryPath);
 
                 await Task.CompletedTask.ConfigureAwait(false);

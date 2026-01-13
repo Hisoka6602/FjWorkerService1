@@ -19,7 +19,10 @@ try {
     var builder = Host.CreateApplicationBuilder(args);
 
     // Windows 服务
+
+#if RELEASE
     builder.Services.AddWindowsService(options => { options.ServiceName = "FjWorkerService"; });
+#endif
 
     // 切换到 NLog
     builder.Logging.ClearProviders();
@@ -30,7 +33,7 @@ try {
     builder.Services.Configure<LogCleanupSettings>(
         builder.Configuration.GetSection("LogCleanup"));
     builder.Services.AddSingleton<SafeExecutor>();
-    builder.Services
+    /*builder.Services
         .AddHttpClient<IWcs, PostProcessingCenterApiClient>((sp, client) => {
             var configuration = sp.GetRequiredService<IConfiguration>();
 
@@ -45,39 +48,65 @@ try {
 
             client.BaseAddress = baseUri;
             client.Timeout = Timeout.InfiniteTimeSpan;
+        });*/
+    builder.Services
+        .AddHttpClient<IWcs, AidukApiClient>((sp, client) => {
+            var configuration = sp.GetRequiredService<IConfiguration>();
+
+            var url = configuration.GetValue<string>("Aiduk:PostCtnUrl");
+            if (string.IsNullOrWhiteSpace(url)) {
+                throw new InvalidOperationException("配置缺失：Aiduk:PostCtnUrl");
+            }
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var baseUri)) {
+                throw new InvalidOperationException($"配置无效：Aiduk:PostCtnUrl = {url}");
+            }
+
+            var secKey = configuration.GetValue<string>("Aiduk:Secret");
+            if (string.IsNullOrWhiteSpace(secKey)) {
+                throw new InvalidOperationException("配置缺失：Aiduk:Secret");
+            }
+
+            var timeoutMs = configuration.GetValue<int?>("Aiduk:TimeoutMs") ?? 1000;
+
+            client.BaseAddress = baseUri;
+            client.Timeout = timeoutMs <= 0
+                ? Timeout.InfiniteTimeSpan
+                : TimeSpan.FromMilliseconds(timeoutMs);
         });
 
-    const string DwsOptionsName = "Dws";
-    const string SorterOptionsName = "Sorter";
+    const string dwsOptionsName = "Dws";
+    const string sorterOptionsName = "Sorter";
 
     builder.Services
-        .AddOptions<TcpConnectConfig>(DwsOptionsName)
+        .AddOptions<TcpConnectConfig>(dwsOptionsName)
         .Bind(builder.Configuration.GetSection("DwsTcpConnectConfig"))
         .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "配置无效：DwsTcpConnectConfig:Ip 不能为空")
         .Validate(c => c.Port is > 0 and <= 65535, "配置无效：DwsTcpConnectConfig:Port 范围必须为 1-65535")
         .ValidateOnStart();
 
     builder.Services
-        .AddOptions<TcpConnectConfig>(SorterOptionsName)
+        .AddOptions<TcpConnectConfig>(sorterOptionsName)
         .Bind(builder.Configuration.GetSection("SorterTcpConnectConfig"))
         .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "配置无效：SorterTcpConnectConfig:Ip 不能为空")
         .Validate(c => c.Port is > 0 and <= 65535, "配置无效：SorterTcpConnectConfig:Port 范围必须为 1-65535")
         .ValidateOnStart();
 
     builder.Services.AddSingleton<IDws>(sp => {
-        var config = sp.GetRequiredService<IOptionsMonitor<TcpConnectConfig>>().Get(DwsOptionsName);
+        var config = sp.GetRequiredService<IOptionsMonitor<TcpConnectConfig>>().Get(dwsOptionsName);
         var dwsLogger = sp.GetRequiredService<ILogger<DefaultDws>>();
         return new DefaultDws(config, dwsLogger);
     });
 
     builder.Services.AddSingleton<ISorter>(sp => {
-        var config = sp.GetRequiredService<IOptionsMonitor<TcpConnectConfig>>().Get(SorterOptionsName);
+        var config = sp.GetRequiredService<IOptionsMonitor<TcpConnectConfig>>().Get(sorterOptionsName);
         var sorterLogger = sp.GetRequiredService<ILogger<DefaultSorter>>();
         return new DefaultSorter(config, sorterLogger);
     });
     builder.Services.AddHostedService<SortingServer>();
     //日志清理服务
     builder.Services.AddHostedService<LogCleanupService>();
+
     var host = builder.Build();
     host.Run();
 }
