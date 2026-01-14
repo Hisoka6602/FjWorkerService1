@@ -33,6 +33,13 @@ try {
     builder.Services.Configure<LogCleanupSettings>(
         builder.Configuration.GetSection("LogCleanup"));
     builder.Services.AddSingleton<SafeExecutor>();
+
+    builder.Services
+        .AddOptions<DataFusionOptions>()
+        .Bind(builder.Configuration.GetSection("DataFusion"))
+        .Validate(o => o.Timeout > 0, "配置无效：DataFusion:Timeout 必须大于 0")
+        .ValidateOnStart();
+
     /*builder.Services
         .AddHttpClient<IWcs, PostProcessingCenterApiClient>((sp, client) => {
             var configuration = sp.GetRequiredService<IConfiguration>();
@@ -50,10 +57,45 @@ try {
             client.Timeout = Timeout.InfiniteTimeSpan;
         });*/
     builder.Services
-        .AddHttpClient<IWcs, AidukApiClient>((sp, client) => {
-            var configuration = sp.GetRequiredService<IConfiguration>();
+        .AddOptions<AidukOptions>()
+        .Configure<IConfiguration>((opt, cfg) => {
+            opt.PostCtnUrl =
+                cfg["Aiduk:PostCtnUrl"]
+                ?? cfg["AidukConfig:PostCtnUrl"]
+                ?? cfg["Aiduk:Url"]
+                ?? cfg["AidukConfig:Url"]
+                ?? "https://api.aiduk.cn/v1/postctn";
 
-            var url = configuration.GetValue<string>("Aiduk:PostCtnUrl");
+            opt.Secret =
+                cfg["Aiduk:Secret"]
+                ?? cfg["AidukConfig:Secret"]
+                ?? cfg["Aiduk:secret"]
+                ?? cfg["AidukConfig:secret"]
+                ?? string.Empty;
+
+            opt.MachineId =
+                cfg.GetValue<int?>("Aiduk:MachineId")
+                ?? cfg.GetValue<int?>("AidukConfig:MachineId")
+                ?? 0;
+
+            // 兼容 Timeout / TimeoutMs 两种命名
+            opt.TimeoutMs =
+                cfg.GetValue<int?>("Aiduk:Timeout")
+                ?? cfg.GetValue<int?>("Aiduk:TimeoutMs")
+                ?? cfg.GetValue<int?>("AidukConfig:Timeout")
+                ?? cfg.GetValue<int?>("AidukConfig:TimeoutMs")
+                ?? 1000;
+        })
+        .Validate(o => !string.IsNullOrWhiteSpace(o.PostCtnUrl), "配置无效：Aiduk:PostCtnUrl 不能为空")
+        .Validate(o => !string.IsNullOrWhiteSpace(o.Secret), "配置无效：Aiduk:Secret 不能为空")
+        .Validate(o => o.TimeoutMs > 0, "配置无效：Aiduk:Timeout 必须大于 0")
+        .ValidateOnStart();
+
+    builder.Services
+        .AddHttpClient<IWcs, AidukApiClient>((sp, client) => {
+            var opt = sp.GetRequiredService<IOptionsMonitor<AidukOptions>>().CurrentValue;
+
+            var url = opt.PostCtnUrl;
             if (string.IsNullOrWhiteSpace(url)) {
                 throw new InvalidOperationException("配置缺失：Aiduk:PostCtnUrl");
             }
@@ -62,12 +104,12 @@ try {
                 throw new InvalidOperationException($"配置无效：Aiduk:PostCtnUrl = {url}");
             }
 
-            var secKey = configuration.GetValue<string>("Aiduk:Secret");
-            if (string.IsNullOrWhiteSpace(secKey)) {
+            var secret = opt.Secret?.Trim();
+            if (string.IsNullOrWhiteSpace(secret)) {
                 throw new InvalidOperationException("配置缺失：Aiduk:Secret");
             }
 
-            var timeoutMs = configuration.GetValue<int?>("Aiduk:TimeoutMs") ?? 1000;
+            var timeoutMs = opt.TimeoutMs;
 
             client.BaseAddress = baseUri;
             client.Timeout = timeoutMs <= 0

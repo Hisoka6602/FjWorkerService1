@@ -8,7 +8,7 @@ set "serviceName=FjWorkerService"
 set "serviceDisplayName=FjWorkerService"  :: 可与 serviceName 不同；仅用于服务管理器显示
 set "serviceDescription=FjWorkerService"
 :: 如需要依赖某个服务（示例：MySQL），取消下一行注释并改名（多个用/分隔，如 MySQL80/W32Time）：
-set "dependService=mysql"
+::set "dependService=mysql"
 
 :: 计算 EXE 路径（默认放在与本 bat 同目录）
 set "exeName=FjWorkerService1.exe"

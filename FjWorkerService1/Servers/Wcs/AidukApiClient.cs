@@ -11,21 +11,23 @@ using FjWorkerService1.Helpers;
 using System.Collections.Generic;
 using FjWorkerService1.Models.Dws;
 using FjWorkerService1.Models.Wcs;
+using FjWorkerService1.Models.Conf;
+using Microsoft.Extensions.Options;
 
 namespace FjWorkerService1.Servers.Wcs {
 
     public class AidukApiClient : IWcs {
         private readonly HttpClient _httpClient;
         private readonly ILogger<PostProcessingCenterApiClient> _logger;
-        private readonly IConfiguration _config;
+        private readonly IOptionsMonitor<AidukOptions> _aidukOptions;
 
         public AidukApiClient(
             HttpClient httpClient,
             ILogger<PostProcessingCenterApiClient> logger,
-            IConfiguration config) {
+            IOptionsMonitor<AidukOptions> aidukOptions) {
             _httpClient = httpClient;
             _logger = logger;
-            _config = config;
+            _aidukOptions = aidukOptions;
         }
 
         public Task<WcsApiResponse> ScanParcelAsync(long parcelId, string barcode, CancellationToken cancellationToken = default) {
@@ -37,22 +39,13 @@ namespace FjWorkerService1.Servers.Wcs {
             var requestTime = DateTime.Now;
 
             try {
-                // 配置读取：允许多种 Key，减少对配置结构的硬依赖
-                var baseUrl =
-                    _config["Aiduk:PostCtnUrl"]
-                    ?? _config["AidukConfig:PostCtnUrl"]
-                    ?? _config["Aiduk:Url"]
-                    ?? _config["AidukConfig:Url"]
-                    ?? "https://api.aiduk.cn/v1/postctn";
+                var opt = _aidukOptions.CurrentValue;
 
-                // 固定盐（示例：szwh）
-                var secret =
-                    _config["Aiduk:Secret"]
-                    ?? _config["AidukConfig:Secret"]
-                    ?? _config["Aiduk:secret"]
-                    ?? _config["AidukConfig:secret"];
+                var baseUrl = string.IsNullOrWhiteSpace(opt.PostCtnUrl)
+                    ? "https://api.aiduk.cn/v1/postctn"
+                    : opt.PostCtnUrl;
 
-                secret = secret?.Trim();
+                var secret = opt.Secret?.Trim();
 
                 if (string.IsNullOrWhiteSpace(secret)) {
                     stopwatch.Stop();
@@ -77,7 +70,6 @@ namespace FjWorkerService1.Servers.Wcs {
                     };
                 }
 
-                // 参数提取：Aiduk 需要 br/ln/wn/hn/gw/mid/t
                 if (!TryExtractAidukArgs(dwsData, out var args, out var extractError)) {
                     stopwatch.Stop();
                     var msg = $"Aiduk 参数提取失败：{extractError}";
@@ -101,17 +93,12 @@ namespace FjWorkerService1.Servers.Wcs {
                     };
                 }
 
-                // mid：优先来自 DWS；若缺失则走配置；都缺失则置 0
-                args.MachineId = args.MachineId > 0
-                    ? args.MachineId
-                    : (_config.GetValue<int?>("Aiduk:MachineId")
-                       ?? _config.GetValue<int?>("AidukConfig:MachineId")
-                       ?? 0);
+                // mid：优先来自 DWS；缺失时使用配置
+                args.MachineId = args.MachineId > 0 ? args.MachineId : opt.MachineId;
 
-                // t：Unix 秒时间戳（与时区无关）
+                // t：Unix 秒时间戳
                 args.TimestampSeconds = DateTimeOffset.Now.ToUnixTimeSeconds();
 
-                // seckey：md5(secret + mid + t) 32位
                 var secKey = ComputeMd5Hex32Lower(string.Concat(
                     secret,
                     args.MachineId.ToString(CultureInfo.InvariantCulture),
@@ -119,35 +106,36 @@ namespace FjWorkerService1.Servers.Wcs {
 
                 var requestUrl = BuildAidukPostCtnUrl(baseUrl, args);
 
-                // 请求头与 curl 输出明文，便于直接复制调用
                 var requestHeaders = $"Content-Type: application/json\r\nseckey: {secKey}";
 
                 var curl = ApiRequestHelper.GenerateFormattedCurl(
                     "POST",
                     requestUrl,
-                    new Dictionary<string, string> {
+                    new Dictionary<string, string>(capacity: 2) {
                         ["Content-Type"] = "application/json",
                         ["seckey"] = secKey
                     },
                     "{}");
 
                 using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
-
-                // 强制 HTTP/1.1，规避部分网关对 HTTP/2 自定义头的兼容问题
                 request.Version = System.Net.HttpVersion.Version11;
                 request.VersionPolicy = System.Net.Http.HttpVersionPolicy.RequestVersionExact;
-
-                // 避免部分 Header 校验导致异常
                 request.Headers.TryAddWithoutValidation("seckey", secKey);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
 
+                // 超时隔离：不修改 HttpClient 全局 Timeout
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                if (opt.TimeoutMs > 0) {
+                    timeoutCts.CancelAfter(opt.TimeoutMs);
+                }
+
                 using var response = await _httpClient
-                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                    .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
                     .ConfigureAwait(false);
 
                 var responseContent = await response.Content
-                    .ReadAsStringAsync(cancellationToken)
+                    .ReadAsStringAsync(timeoutCts.Token)
                     .ConfigureAwait(false);
 
                 stopwatch.Stop();
@@ -161,8 +149,6 @@ namespace FjWorkerService1.Servers.Wcs {
 
                 if (httpOk && bizOk && !string.IsNullOrWhiteSpace(chuteId)) {
                     var msg = $"Aiduk 请求格口成功，格口: {chuteId}";
-
-                    // 把格口附加到响应文本中，便于日志检索
                     var mergedBody = $"{responseContent}\r\n格口:[{chuteId}]";
 
                     return new WcsApiResponse {
@@ -234,23 +220,47 @@ namespace FjWorkerService1.Servers.Wcs {
                     FormattedCurl = null,
                 };
             }
+            catch (OperationCanceledException) {
+                stopwatch.Stop();
+                const string msg = "Aiduk 请求格口超时取消";
+
+                var opt = _aidukOptions.CurrentValue;
+                var baseUrl = string.IsNullOrWhiteSpace(opt.PostCtnUrl)
+                    ? "https://api.aiduk.cn/v1/postctn"
+                    : opt.PostCtnUrl;
+
+                return new WcsApiResponse {
+                    RequestStatus = ApiRequestStatus.Exception,
+                    FormattedMessage = msg,
+                    ErrorMessage = msg,
+                    CurlData = string.Empty,
+                    ParcelId = parcelId,
+                    RequestUrl = baseUrl,
+                    RequestBody = "{}",
+                    RequestHeaders = null,
+                    RequestTime = requestTime,
+                    DurationMs = stopwatch.ElapsedMilliseconds,
+                    ResponseTime = DateTime.Now,
+                    ResponseBody = null,
+                    ResponseStatusCode = null,
+                    ResponseHeaders = null,
+                    FormattedCurl = null,
+                };
+            }
             catch (Exception ex) {
                 stopwatch.Stop();
 
                 var detailedMessage = ApiRequestHelper.GetDetailedExceptionMessage(ex);
 
-                var baseUrl =
-                    _config["Aiduk:PostCtnUrl"]
-                    ?? _config["AidukConfig:PostCtnUrl"]
-                    ?? _config["Aiduk:Url"]
-                    ?? _config["AidukConfig:Url"]
-                    ?? "https://api.aiduk.cn/v1/postctn";
+                var opt = _aidukOptions.CurrentValue;
+                var baseUrl = string.IsNullOrWhiteSpace(opt.PostCtnUrl)
+                    ? "https://api.aiduk.cn/v1/postctn"
+                    : opt.PostCtnUrl;
 
-                // 异常场景下仍给出可复现的 curl（seckey 无法在此处重建时，保持占位）
                 var curl = ApiRequestHelper.GenerateFormattedCurl(
                     "POST",
                     baseUrl,
-                    new Dictionary<string, string> {
+                    new Dictionary<string, string>(capacity: 2) {
                         ["Content-Type"] = "application/json",
                         ["seckey"] = "<seckey>"
                     },
