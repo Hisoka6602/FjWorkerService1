@@ -42,5 +42,17 @@ namespace FjWorkerService1.Servers.Wcs {
             string chuteId,
             string barcode,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// 上传图片
+        /// </summary>
+        /// <param name="barcode"></param>
+        /// <param name="imageData"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        Task<WcsApiResponse> UploadImageAsync(
+            string barcode,
+            byte[] imageData,
+            CancellationToken cancellationToken = default);
     }
 }

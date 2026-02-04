@@ -716,6 +716,11 @@ public class PostProcessingCenterApiClient : IWcs {
         }
     }
 
+    public Task<WcsApiResponse> UploadImageAsync(string barcode, byte[] imageData, CancellationToken cancellationToken = default) {
+        //该接口暂不实现
+        return Task.FromResult(new WcsApiResponse());
+    }
+
     /// <summary>
     /// 从SOAP响应中提取格口信息
     /// Extract chute from SOAP response

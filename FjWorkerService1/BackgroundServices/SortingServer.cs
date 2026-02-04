@@ -96,9 +96,10 @@ namespace FjWorkerService1.BackgroundServices {
                                 Volume = value.Volume,
                                 ScannedAt = DateTime.Now
                             });
+                            _logger.LogInformation($"接口curl:{requestChuteAsync.FormattedCurl}");
+                            _logger.LogInformation($"格式化数据:{requestChuteAsync.FormattedMessage}");
                             if (requestChuteAsync.RequestStatus == ApiRequestStatus.Success) {
-                                _logger.LogInformation($"接口响应数据:{requestChuteAsync.RequestBody}");
-                                _logger.LogInformation($"接口curl:{requestChuteAsync.FormattedCurl}");
+                                _logger.LogInformation($"接口响应数据:{requestChuteAsync.ResponseBody}");
                             }
                             else {
                                 _logger.LogInformation($"接口访问异常状态:{requestChuteAsync.RequestStatus}");

@@ -12,7 +12,7 @@ namespace FjWorkerService1.Models.Conf {
         /// <summary>
         /// PostCtn 接口地址
         /// </summary>
-        public required string PostCtnUrl { get; set; } = string.Empty;
+        public required string BaseUrl { get; set; } = string.Empty;
 
         /// <summary>
         /// 接口密钥（用于请求鉴权）

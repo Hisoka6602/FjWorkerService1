@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 using FjWorkerService1.Servers.Sorter;
 using FjWorkerService1.BackgroundServices;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
+using FjWorkerService1.BackgroundServices.FileSystemImage;
 
 var nlogConfigPath = Path.Combine(AppContext.BaseDirectory, "nlog.config");
 LogManager.Setup().LoadConfigurationFromFile(nlogConfigPath);
@@ -39,7 +40,10 @@ try {
         .Bind(builder.Configuration.GetSection("DataFusion"))
         .Validate(o => o.Timeout > 0, "配置无效：DataFusion:Timeout 必须大于 0")
         .ValidateOnStart();
-
+    builder.Services
+        .AddOptions<ImageMonitoringOptions>()
+        .Bind(builder.Configuration.GetSection("ImageMonitoring"))
+        .ValidateOnStart();
     /*builder.Services
         .AddHttpClient<IWcs, PostProcessingCenterApiClient>((sp, client) => {
             var configuration = sp.GetRequiredService<IConfiguration>();
@@ -59,7 +63,7 @@ try {
     builder.Services
         .AddOptions<AidukOptions>()
         .Configure<IConfiguration>((opt, cfg) => {
-            opt.PostCtnUrl =
+            opt.BaseUrl =
                 cfg["Aiduk:PostCtnUrl"]
                 ?? cfg["AidukConfig:PostCtnUrl"]
                 ?? cfg["Aiduk:Url"]
@@ -86,7 +90,7 @@ try {
                 ?? cfg.GetValue<int?>("AidukConfig:TimeoutMs")
                 ?? 1000;
         })
-        .Validate(o => !string.IsNullOrWhiteSpace(o.PostCtnUrl), "配置无效：Aiduk:PostCtnUrl 不能为空")
+        .Validate(o => !string.IsNullOrWhiteSpace(o.BaseUrl), "配置无效：Aiduk:PostCtnUrl 不能为空")
         .Validate(o => !string.IsNullOrWhiteSpace(o.Secret), "配置无效：Aiduk:Secret 不能为空")
         .Validate(o => o.TimeoutMs > 0, "配置无效：Aiduk:Timeout 必须大于 0")
         .ValidateOnStart();
@@ -95,7 +99,7 @@ try {
         .AddHttpClient<IWcs, AidukApiClient>((sp, client) => {
             var opt = sp.GetRequiredService<IOptionsMonitor<AidukOptions>>().CurrentValue;
 
-            var url = opt.PostCtnUrl;
+            var url = opt.BaseUrl;
             if (string.IsNullOrWhiteSpace(url)) {
                 throw new InvalidOperationException("配置缺失：Aiduk:PostCtnUrl");
             }
@@ -148,6 +152,8 @@ try {
     builder.Services.AddHostedService<SortingServer>();
     //日志清理服务
     builder.Services.AddHostedService<LogCleanupService>();
+    //图片新增监控服务
+    builder.Services.AddHostedService<FileSystemImageMonitoringHostedService>();
 
     var host = builder.Build();
     host.Run();
