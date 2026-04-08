@@ -19,18 +19,18 @@ var bootstrapLogger = LogManager.GetCurrentClassLogger();
 try {
     var builder = Host.CreateApplicationBuilder(args);
 
-    // Windows ����
+    // Windows 服务
 
 #if RELEASE
     builder.Services.AddWindowsService(options => { options.ServiceName = "FjWorkerService"; });
 #endif
 
-    // �л��� NLog
+    // 切换到 NLog
     builder.Logging.ClearProviders();
     builder.Logging.SetMinimumLevel(LogLevel.Information);
     builder.Logging.AddNLog();
 
-    // ======= ���汣�������е� DI ע�ᣨԭ���� =======
+    // ======= 保持原有服务注册（在此基础上扩展） =======
     builder.Services.Configure<LogCleanupSettings>(
         builder.Configuration.GetSection("LogCleanup"));
     builder.Services.AddSingleton<SafeExecutor>();
@@ -38,7 +38,7 @@ try {
     builder.Services
         .AddOptions<DataFusionOptions>()
         .Bind(builder.Configuration.GetSection("DataFusion"))
-        .Validate(o => o.Timeout > 0, "������Ч��DataFusion:Timeout ������� 0")
+        .Validate(o => o.Timeout > 0, "配置无效：DataFusion:Timeout 必须大于 0")
         .ValidateOnStart();
     builder.Services
         .AddOptions<ImageMonitoringOptions>()
@@ -93,7 +93,7 @@ try {
                     ?? cfg.GetValue<int?>("AidukConfig:MachineId")
                     ?? 0;
 
-                // ���� Timeout / TimeoutMs ��������
+                // 兼容 Timeout / TimeoutMs 两种配置名
                 opt.TimeoutMs =
                     cfg.GetValue<int?>("Aiduk:Timeout")
                     ?? cfg.GetValue<int?>("Aiduk:TimeoutMs")
@@ -143,15 +143,15 @@ try {
     builder.Services
         .AddOptions<TcpConnectConfig>(dwsOptionsName)
         .Bind(builder.Configuration.GetSection("DwsTcpConnectConfig"))
-        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "������Ч��DwsTcpConnectConfig:Ip ����Ϊ��")
-        .Validate(c => c.Port is > 0 and <= 65535, "������Ч��DwsTcpConnectConfig:Port ��Χ����Ϊ 1-65535")
+        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "配置无效：DwsTcpConnectConfig:Ip 不能为空")
+        .Validate(c => c.Port is > 0 and <= 65535, "配置无效：DwsTcpConnectConfig:Port 范围必须为 1-65535")
         .ValidateOnStart();
 
     builder.Services
         .AddOptions<TcpConnectConfig>(sorterOptionsName)
         .Bind(builder.Configuration.GetSection("SorterTcpConnectConfig"))
-        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "������Ч��SorterTcpConnectConfig:Ip ����Ϊ��")
-        .Validate(c => c.Port is > 0 and <= 65535, "������Ч��SorterTcpConnectConfig:Port ��Χ����Ϊ 1-65535")
+        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "配置无效：SorterTcpConnectConfig:Ip 不能为空")
+        .Validate(c => c.Port is > 0 and <= 65535, "配置无效：SorterTcpConnectConfig:Port 范围必须为 1-65535")
         .ValidateOnStart();
 
     builder.Services.AddSingleton<IDws>(sp => {
@@ -166,17 +166,17 @@ try {
         return new DefaultSorter(config, sorterLogger);
     });
     builder.Services.AddHostedService<SortingServer>();
-    //��־��������
+    // 日志清理服务
     builder.Services.AddHostedService<LogCleanupService>();
-    //ͼƬ������ط���
+    // 图片文件监控服务
     builder.Services.AddHostedService<FileSystemImageMonitoringHostedService>();
 
     var host = builder.Build();
     host.Run();
 }
 catch (Exception ex) {
-    // ������붵�ף������������ʧ��ʱû��־
-    bootstrapLogger.Error(ex, "��������ʧ��");
+    // 兜底日志，避免启动阶段失败时无日志
+    bootstrapLogger.Error(ex, "程序启动失败");
     throw;
 }
 finally {

@@ -19,6 +19,9 @@ using System.Text.RegularExpressions;
 namespace FjWorkerService1.Servers.Wcs {
 
     public class AidukApiClient : IWcs {
+        private static readonly Regex SensitiveHeaderRegex = new(
+            @"(?im)^(\s*seckey\s*:\s*).+$",
+            RegexOptions.Compiled);
         private readonly HttpClient _httpClient;
         private readonly ILogger<AidukApiClient> _logger;
         private readonly IOptionsMonitor<AidukOptions> _aidukOptions;
@@ -935,7 +938,8 @@ namespace FjWorkerService1.Servers.Wcs {
             long durationMs,
             string parsedChuteId,
             string message) {
-            var normalizedHeaders = Truncate(requestHeaders, 1000);
+            var sanitizedHeaders = SanitizeRequestHeaders(requestHeaders);
+            var normalizedHeaders = Truncate(sanitizedHeaders, 1000);
             var normalizedRequestBody = Truncate(requestBody, 4000);
             var normalizedResponseBody = Truncate(responseBody, 4000);
             var normalizedMessage = Truncate(message, 300);
@@ -957,6 +961,14 @@ namespace FjWorkerService1.Servers.Wcs {
             _logger.LogWarning(
                 "[Api][爱度科][{操作}][访问记录] 状态={状态} 包裹Id={包裹Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 提示={提示}",
                 operation, status, parcelId, requestUrl, normalizedHeaders, normalizedRequestBody, normalizedResponseBody, durationMs, parsedChuteId, normalizedMessage);
+        }
+
+        private static string SanitizeRequestHeaders(string headers) {
+            if (string.IsNullOrWhiteSpace(headers)) {
+                return string.Empty;
+            }
+
+            return SensitiveHeaderRegex.Replace(headers, "$1***");
         }
 
         private static string Truncate(string text, int maxLength) {

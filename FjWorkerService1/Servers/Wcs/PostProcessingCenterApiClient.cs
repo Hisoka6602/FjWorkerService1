@@ -21,6 +21,9 @@ namespace FjWorkerService1.Servers.Wcs;
 /// Configuration loaded from LiteDB with hot reload support
 /// </summary>
 public class PostProcessingCenterApiClient : IWcs {
+    private static readonly Regex SensitiveHeaderRegex = new(
+        @"(?im)^(\s*(authorization|seckey|token)\s*:\s*).+$",
+        RegexOptions.Compiled);
     private readonly HttpClient _httpClient;
     private readonly ILogger<PostProcessingCenterApiClient> _logger;
     private IConfiguration _config;
@@ -753,14 +756,16 @@ public class PostProcessingCenterApiClient : IWcs {
     }
 
     private void LogApiRequest(string operation, long parcelId, string? barcode, string url, string requestHeaders, string requestBody) {
+        var truncatedHeaders = Truncate(SanitizeRequestHeaders(requestHeaders), 1000);
+        var truncatedRequestBody = Truncate(requestBody, 4000);
         _logger.LogInformation(
             "[Api][邮政处理中心][{操作}][请求] 包裹Id={包裹Id} 条码={条码} 地址={地址} 请求头={请求头} 请求体={请求体}",
             operation,
             parcelId,
             barcode ?? string.Empty,
             url,
-            requestHeaders,
-            requestBody);
+            truncatedHeaders,
+            truncatedRequestBody);
     }
 
     private void LogApiResponseSummary(
@@ -777,6 +782,9 @@ public class PostProcessingCenterApiClient : IWcs {
         string parsedChuteId,
         string message) {
         var codeText = statusCode?.ToString() ?? "-";
+        var truncatedHeaders = Truncate(SanitizeRequestHeaders(requestHeaders), 1000);
+        var truncatedRequestBody = Truncate(requestBody, 4000);
+        var truncatedResponseBody = Truncate(responseBody, 4000);
         var normalizedMessage = Truncate(message, 300);
 
         if (status == ApiRequestStatus.Success) {
@@ -790,9 +798,9 @@ public class PostProcessingCenterApiClient : IWcs {
                 durationMs,
                 parsedChuteId,
                 url,
-                requestHeaders,
-                requestBody,
-                responseBody,
+                truncatedHeaders,
+                truncatedRequestBody,
+                truncatedResponseBody,
                 normalizedMessage);
             return;
         }
@@ -808,9 +816,9 @@ public class PostProcessingCenterApiClient : IWcs {
                 durationMs,
                 parsedChuteId,
                 url,
-                requestHeaders,
-                requestBody,
-                responseBody,
+                truncatedHeaders,
+                truncatedRequestBody,
+                truncatedResponseBody,
                 normalizedMessage);
             return;
         }
@@ -825,10 +833,18 @@ public class PostProcessingCenterApiClient : IWcs {
             durationMs,
             parsedChuteId,
             url,
-            requestHeaders,
-            requestBody,
-            responseBody,
+            truncatedHeaders,
+            truncatedRequestBody,
+            truncatedResponseBody,
             normalizedMessage);
+    }
+
+    private static string SanitizeRequestHeaders(string headers) {
+        if (string.IsNullOrWhiteSpace(headers)) {
+            return string.Empty;
+        }
+
+        return SensitiveHeaderRegex.Replace(headers, "$1***");
     }
 
     private static string Truncate(string text, int maxLength) {

@@ -85,9 +85,7 @@ namespace FjWorkerService1.Servers {
                 var failedCount = 0;
 
                 try {
-                    var files = Directory.GetFiles(directory, "*.log", SearchOption.AllDirectories);
-
-                    foreach (var file in files) {
+                    foreach (var file in Directory.EnumerateFiles(directory, "*.log", SearchOption.AllDirectories)) {
                         try {
                             var fileInfo = new FileInfo(file);
                             if (fileInfo.LastWriteTime < cutoffDate) {
