@@ -5,11 +5,11 @@ using System.Threading;
 using TouchSocket.Core;
 using TouchSocket.Sockets;
 using FjWorkerService1.Enums;
+using FjWorkerService1.Helpers;
 using FjWorkerService1.Models.Conf;
 using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
 using FjWorkerService1.Models.Sorting;
-using FjWorkerService1.Helpers;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace FjWorkerService1.Servers.Sorter {
@@ -24,7 +24,9 @@ namespace FjWorkerService1.Servers.Sorter {
         private int _connectStarted;
         private int _isDisposed;
 
-        // TouchSocket 4.0.4: 不同模型下连接对象类型可能不同，这里用 object 存，发送/状态用 dynamic 访问。
+        /// <summary>
+        /// 服务端模式下的客户端连接集合
+        /// </summary>
         private readonly ConcurrentDictionary<string, object> _clients = new();
 
         private readonly JsonSerializerOptions _jsonOptions = new() {
@@ -35,7 +37,13 @@ namespace FjWorkerService1.Servers.Sorter {
 
         public DefaultSorter(TcpConnectConfig config, ILogger<DefaultSorter> logger) {
             _logger = logger;
-            _eventDispatcher = new BoundedEventDispatcher(_logger, "Sorter", capacity: 4096, workers: 4);
+
+            /// <summary>
+            /// 改为单 worker，确保上游消息按进入队列的顺序派发
+            /// 避免 ParcelDetected / SortingCompleted 多 worker 并发导致业务层顺序抖动
+            /// </summary>
+            _eventDispatcher = new BoundedEventDispatcher(_logger, "Sorter", capacity: 4096, workers: 1);
+
             Config = config ?? new TcpConnectConfig {
                 Mode = ConnectType.Client,
                 Ip = "127.0.0.1",
@@ -54,7 +62,7 @@ namespace FjWorkerService1.Servers.Sorter {
                 return;
             }
 
-            try { _eventDispatcher.Dispose(); } catch { /* ignore */ }
+            try { _eventDispatcher.Dispose(); } catch { }
 
             try {
                 var client = Interlocked.Exchange(ref _client, null);
@@ -67,19 +75,18 @@ namespace FjWorkerService1.Servers.Sorter {
                 if (server != null) {
                     server.Connected -= OnServerClientConnected;
                     server.Received -= OnServerReceived;
-
                     server.SafeDispose();
                 }
 
                 _clients.Clear();
             }
             catch {
-                // ignore
             }
         }
 
         public async Task ConnectAsync(CancellationToken cancellationToken = default) {
             cancellationToken.ThrowIfCancellationRequested();
+
             if (Interlocked.CompareExchange(ref _connectStarted, 1, 0) != 0) {
                 return;
             }
@@ -91,7 +98,6 @@ namespace FjWorkerService1.Servers.Sorter {
                         break;
 
                     case ConnectType.Client:
-                        // 客户端模式：无限重连 + 指数退避（最大 2s）
                         await RunClientReconnectLoopAsync(cancellationToken).ConfigureAwait(false);
                         break;
 
@@ -104,10 +110,17 @@ namespace FjWorkerService1.Servers.Sorter {
             }
         }
 
-        public async Task SendEventAsync(ChuteAssignmentEventArgs chuteAssignment, CancellationToken cancellationToken = default) {
+        public async Task SendEventAsync(
+            ChuteAssignmentEventArgs chuteAssignment,
+            CancellationToken cancellationToken = default) {
             var payload = JsonSerializer.Serialize(chuteAssignment, _jsonOptions) + "\n";
 
-            _logger.LogInformation("[Sorting][SEND] {Mode} -> {Ip}:{Port} {Payload}", Config.Mode, Config.Ip, Config.Port, Truncate(payload));
+            _logger.LogInformation(
+                "[Sorting][SEND] {Mode} -> {Ip}:{Port} {Payload}",
+                Config.Mode,
+                Config.Ip,
+                Config.Port,
+                Truncate(payload));
 
             if (Config.Mode == ConnectType.Client) {
                 var client = Volatile.Read(ref _client);
@@ -117,17 +130,17 @@ namespace FjWorkerService1.Servers.Sorter {
                 }
 
                 await SendAnyAsync(client, payload).ConfigureAwait(false);
+                return;
             }
-            else {
-                var server = Volatile.Read(ref _server);
-                if (server is null) {
-                    _logger.LogError("排序服务未启动（服务端模式）。");
-                    return;
-                }
 
-                foreach (var kv in _clients) {
-                    await SendAnyAsync(kv.Value, payload).ConfigureAwait(false);
-                }
+            var server = Volatile.Read(ref _server);
+            if (server is null) {
+                _logger.LogError("排序服务未启动（服务端模式）。");
+                return;
+            }
+
+            foreach (var item in _clients) {
+                await SendAnyAsync(item.Value, payload).ConfigureAwait(false);
             }
         }
 
@@ -140,7 +153,7 @@ namespace FjWorkerService1.Servers.Sorter {
 
             var config = new TouchSocketConfig()
                 .SetListenIPHosts([new IPHost($"{Config.Ip}:{Config.Port}")])
-                .ConfigureContainer(a => { })
+                .ConfigureContainer(_ => { })
                 .ConfigurePlugins(_ => { });
 
             service.Connected += OnServerClientConnected;
@@ -165,7 +178,6 @@ namespace FjWorkerService1.Servers.Sorter {
 
             while (!cancellationToken.IsCancellationRequested) {
                 try {
-                    // 清理旧连接
                     var staleClient = Interlocked.Exchange(ref _client, null);
                     if (staleClient != null) {
                         try { staleClient.Received -= OnClientReceived; } catch { }
@@ -174,16 +186,12 @@ namespace FjWorkerService1.Servers.Sorter {
                     }
 
                     await StartClientOnceAsync(cancellationToken).ConfigureAwait(false);
-
-                    // 连接成功后重置退避
                     backoff = TimeSpan.FromMilliseconds(100);
 
-                    // 等待断开/取消
                     while (!cancellationToken.IsCancellationRequested && _client != null && _client.Online) {
                         await Task.Delay(200, cancellationToken).ConfigureAwait(false);
                     }
 
-                    // 断开
                     if (!cancellationToken.IsCancellationRequested) {
                         _logger.LogWarning("[Sorting] Client disconnected from {Ip}:{Port}", Config.Ip, Config.Port);
                         PublishDisconnected();
@@ -214,7 +222,6 @@ namespace FjWorkerService1.Servers.Sorter {
             }
         }
 
-        // 单次连接（失败由外层重试）
         private async Task StartClientOnceAsync(CancellationToken cancellationToken) {
             if (Volatile.Read(ref _client) != null) {
                 return;
@@ -224,7 +231,7 @@ namespace FjWorkerService1.Servers.Sorter {
 
             var config = new TouchSocketConfig()
                 .SetRemoteIPHost(new IPHost($"{Config.Ip}:{Config.Port}"))
-                .ConfigureContainer(a => { })
+                .ConfigureContainer(_ => { })
                 .ConfigurePlugins(_ => { });
 
             client.Received += OnClientReceived;
@@ -243,36 +250,37 @@ namespace FjWorkerService1.Servers.Sorter {
             try { client.Dispose(); } catch { }
         }
 
-        // TouchSocket 4.0.4 的事件签名在不同子包/类型上可能不同，这里用 object + dynamic 适配
         private Task OnServerClientConnected(object client, ConnectedEventArgs e) {
-            var id = TryGetClientId(client) ?? Guid.NewGuid().ToString("N");
-            _clients[id] = client;
-            _logger.LogInformation("[Sorting][SERVER] Client connected: {ClientId}, total={Count}", id, _clients.Count);
+            var clientId = TryGetClientId(client) ?? Guid.NewGuid().ToString("N");
+            _clients[clientId] = client;
+            _logger.LogInformation("[Sorting][SERVER] Client connected: {ClientId}, total={Count}", clientId, _clients.Count);
             return Task.CompletedTask;
         }
 
         private Task OnServerReceived(object client, ReceivedDataEventArgs e) {
-            var msg = TryGetMessage(e);
-            if (!string.IsNullOrWhiteSpace(msg)) {
-                _logger.LogInformation("[Sorting][RECV][SERVER] {Payload}", Truncate(msg));
-                HandleEnvelope(msg);
+            var message = TryGetMessage(e);
+            if (!string.IsNullOrWhiteSpace(message)) {
+                _logger.LogInformation("[Sorting][RECV][SERVER] {Payload}", Truncate(message));
+                HandleEnvelope(message);
             }
+
             return Task.CompletedTask;
         }
 
         private Task OnClientReceived(object client, ReceivedDataEventArgs e) {
-            var msg = TryGetMessage(e);
-            if (!string.IsNullOrWhiteSpace(msg)) {
-                _logger.LogInformation("[Sorting][RECV][CLIENT] {Payload}", Truncate(msg));
-                HandleEnvelope(msg);
+            var message = TryGetMessage(e);
+            if (!string.IsNullOrWhiteSpace(message)) {
+                _logger.LogInformation("[Sorting][RECV][CLIENT] {Payload}", Truncate(message));
+                HandleEnvelope(message);
             }
+
             return Task.CompletedTask;
         }
 
         private static string? TryGetClientId(object client) {
             try {
-                dynamic d = client;
-                return (string?)d.Id;
+                dynamic dynamicClient = client;
+                return (string?)dynamicClient.Id;
             }
             catch {
                 return null;
@@ -280,39 +288,54 @@ namespace FjWorkerService1.Servers.Sorter {
         }
 
         private static string? TryGetMessage(ReceivedDataEventArgs e) {
-            // 1) 如果启用了数据处理适配器（如 TerminatorPackageAdapter），通常优先从 RequestInfo 获取
             if (e.RequestInfo is not null) {
                 var text = e.RequestInfo.ToString();
                 return string.IsNullOrWhiteSpace(text) ? null : text;
             }
 
-            // 2) TouchSocket 4.x 推荐从 Memory 获取（替代 ByteBlock）
             var memory = e.Memory;
             if (memory.IsEmpty) {
                 return null;
             }
 
-            // 低分配：直接从 Span 解码
             return Encoding.UTF8.GetString(memory.Span);
         }
 
         private static async Task SendAnyAsync(object target, string payload) {
             try {
-                dynamic d = target;
+                dynamic dynamicTarget = target;
 
-                // 优先 SendAsync(string)
-                try { await d.SendAsync(payload).ConfigureAwait(false); return; } catch { }
+                try {
+                    await dynamicTarget.SendAsync(payload).ConfigureAwait(false);
+                    return;
+                }
+                catch {
+                }
 
-                // 其次 Send(string)
-                try { d.Send(payload); return; } catch { }
+                try {
+                    dynamicTarget.Send(payload);
+                    return;
+                }
+                catch {
+                }
 
-                // 再尝试 byte[]
                 var bytes = Encoding.UTF8.GetBytes(payload);
-                try { await d.SendAsync(bytes).ConfigureAwait(false); return; } catch { }
-                try { d.Send(bytes); return; } catch { }
+
+                try {
+                    await dynamicTarget.SendAsync(bytes).ConfigureAwait(false);
+                    return;
+                }
+                catch {
+                }
+
+                try {
+                    dynamicTarget.Send(bytes);
+                    return;
+                }
+                catch {
+                }
             }
             catch {
-                // ignore
             }
         }
 
@@ -325,23 +348,23 @@ namespace FjWorkerService1.Servers.Sorter {
                 return;
             }
 
-            if (head is null || string.IsNullOrWhiteSpace(head.Type))
+            if (head is null || string.IsNullOrWhiteSpace(head.Type)) {
                 return;
+            }
 
             switch (head.Type) {
                 case "ParcelDetected": {
-                        var env = JsonConvert.DeserializeObject<ParcelDetectedMessage>(json);
-
-                        if (env != null) {
-                            PublishParcelDetected(env);
+                        var message = JsonConvert.DeserializeObject<ParcelDetectedMessage>(json);
+                        if (message != null) {
+                            PublishParcelDetected(message);
                         }
                         break;
                     }
-                case "SortingCompleted": {
-                        var env = JsonConvert.DeserializeObject<SortingCompletedMessage>(json);
 
-                        if (env != null) {
-                            PublishSortingCompleted(env);
+                case "SortingCompleted": {
+                        var message = JsonConvert.DeserializeObject<SortingCompletedMessage>(json);
+                        if (message != null) {
+                            PublishSortingCompleted(message);
                         }
                         break;
                     }
@@ -393,10 +416,13 @@ namespace FjWorkerService1.Servers.Sorter {
             }
         }
 
-        private static string Truncate(string s, int max = 500) {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            s = s.Replace("\r", " ").Replace("\n", " ");
-            return s.Length <= max ? s : s[..max] + "...";
+        private static string Truncate(string text, int max = 500) {
+            if (string.IsNullOrEmpty(text)) {
+                return string.Empty;
+            }
+
+            var normalized = text.Replace("\r", " ").Replace("\n", " ");
+            return normalized.Length <= max ? normalized : normalized[..max] + "...";
         }
 
         private sealed record EnvelopeHead {
