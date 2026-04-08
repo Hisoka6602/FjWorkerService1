@@ -19,13 +19,16 @@ using System.Text.RegularExpressions;
 namespace FjWorkerService1.Servers.Wcs {
 
     public class AidukApiClient : IWcs {
+        private static readonly Regex SensitiveHeaderRegex = new(
+            @"(?im)^(\s*seckey\s*:\s*).+$",
+            RegexOptions.Compiled);
         private readonly HttpClient _httpClient;
-        private readonly ILogger<PostProcessingCenterApiClient> _logger;
+        private readonly ILogger<AidukApiClient> _logger;
         private readonly IOptionsMonitor<AidukOptions> _aidukOptions;
 
         public AidukApiClient(
             HttpClient httpClient,
-            ILogger<PostProcessingCenterApiClient> logger,
+            ILogger<AidukApiClient> logger,
             IOptionsMonitor<AidukOptions> aidukOptions) {
             _httpClient = httpClient;
             _logger = logger;
@@ -40,6 +43,9 @@ namespace FjWorkerService1.Servers.Wcs {
             var stopwatch = Stopwatch.StartNew();
             var requestTime = DateTime.Now;
             string curl = string.Empty;
+            var requestUrl = string.Empty;
+            const string requestBody = "{}";
+            string requestHeaders = string.Empty;
 
             try {
                 var opt = _aidukOptions.CurrentValue;
@@ -146,9 +152,15 @@ namespace FjWorkerService1.Servers.Wcs {
                     args.MachineId.ToString(CultureInfo.InvariantCulture),
                     args.TimestampSeconds.ToString(CultureInfo.InvariantCulture)));
 
-                var requestUrl = BuildAidukPostCtnUrl(baseUrl, args);
+                requestUrl = BuildAidukPostCtnUrl(baseUrl, args);
+                _logger.LogInformation(
+                    "[Api][Aiduk][RequestChute][REQ] parcelId={ParcelId} url={Url} barcode={Barcode} machineId={MachineId}",
+                    parcelId,
+                    requestUrl,
+                    args.Barcode,
+                    args.MachineId);
 
-                var requestHeaders = $"Content-Type: application/json\r\nseckey: {secKey}";
+                requestHeaders = $"Content-Type: application/json\r\nseckey: {secKey}";
 
                 curl = ApiRequestHelper.GenerateFormattedCurl(
                     "POST",
@@ -157,7 +169,7 @@ namespace FjWorkerService1.Servers.Wcs {
                         ["Content-Type"] = "application/json",
                         ["seckey"] = secKey
                     },
-                    "{}");
+                    requestBody);
 
                 using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
                 request.Version = System.Net.HttpVersion.Version11;
@@ -191,6 +203,8 @@ namespace FjWorkerService1.Servers.Wcs {
                 if (httpOk && bizOk) {
                     var msg = $"Aiduk 请求格口成功，格口: {chuteId}，业务码: {bizCode}，消息: {bizMsg}";
                     var mergedBody = $"{responseContent}\r\n格口:[{chuteId}]";
+                    LogResponseSummary("RequestChute", ApiRequestStatus.Success, parcelId, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, msg);
+                    LogApiAccessRecord("RequestChute", ApiRequestStatus.Success, parcelId, requestUrl, requestHeaders, requestBody, mergedBody, stopwatch.ElapsedMilliseconds, chuteId ?? "-", msg);
                     return new WcsApiResponse {
                         RequestStatus = ApiRequestStatus.Success,
                         FormattedMessage = msg,
@@ -213,6 +227,8 @@ namespace FjWorkerService1.Servers.Wcs {
                 var failMsg = httpOk
                     ? $"Aiduk 请求格口失败，格口: {chuteId}，业务码: {bizCode}，消息: {bizMsg}"
                     : $"Aiduk 请求格口失败，HTTP 状态码: {(int)response.StatusCode}";
+                LogResponseSummary("RequestChute", ApiRequestStatus.Failure, parcelId, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, failMsg);
+                LogApiAccessRecord("RequestChute", ApiRequestStatus.Failure, parcelId, requestUrl, requestHeaders, requestBody, responseContent, stopwatch.ElapsedMilliseconds, chuteId ?? "-", failMsg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -241,6 +257,8 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 请求格口已取消";
+                _logger.LogWarning("[Api][Aiduk][RequestChute] 已取消 parcelId={ParcelId}", parcelId);
+                LogApiAccessRecord("RequestChute", ApiRequestStatus.Exception, parcelId, requestUrl, requestHeaders, requestBody, msg, stopwatch.ElapsedMilliseconds, "-", msg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -263,6 +281,8 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 请求格口超时";
+                _logger.LogError("[Api][Aiduk][RequestChute] 超时 parcelId={ParcelId}", parcelId);
+                LogApiAccessRecord("RequestChute", ApiRequestStatus.Exception, parcelId, requestUrl, requestHeaders, requestBody, msg, stopwatch.ElapsedMilliseconds, "-", msg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -284,8 +304,10 @@ namespace FjWorkerService1.Servers.Wcs {
             }
             catch (Exception ex) {
                 stopwatch.Stop();
+                _logger.LogError(ex, "[Api][Aiduk][RequestChute] 异常 parcelId={ParcelId}", parcelId);
 
                 var detailedMessage = ApiRequestHelper.GetDetailedExceptionMessage(ex);
+                LogApiAccessRecord("RequestChute", ApiRequestStatus.Exception, parcelId, requestUrl, requestHeaders, requestBody, ex.ToString(), stopwatch.ElapsedMilliseconds, "-", detailedMessage);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -315,6 +337,9 @@ namespace FjWorkerService1.Servers.Wcs {
             var stopwatch = Stopwatch.StartNew();
             var requestTime = DateTime.Now;
             var curl = string.Empty;
+            var requestUrl = string.Empty;
+            const string requestBody = "<multipart/form-data>";
+            string requestHeaders = string.Empty;
 
             try {
                 if (string.IsNullOrWhiteSpace(barcode)) {
@@ -441,7 +466,13 @@ namespace FjWorkerService1.Servers.Wcs {
                     opt.MachineId.ToString(CultureInfo.InvariantCulture),
                     timestampSeconds.ToString(CultureInfo.InvariantCulture)));
 
-                var requestUrl = BuildAidukUpImgUrl(baseUrl, barcode.Trim(), opt.MachineId, timestampSeconds);
+                requestUrl = BuildAidukUpImgUrl(baseUrl, barcode.Trim(), opt.MachineId, timestampSeconds);
+                _logger.LogInformation(
+                    "[Api][Aiduk][UploadImage][REQ] url={Url} barcode={Barcode} bytes={Bytes} machineId={MachineId}",
+                    requestUrl,
+                    barcode.Trim(),
+                    imageData.Length,
+                    opt.MachineId);
 
                 curl = ApiRequestHelper.GenerateFormattedCurl(
                     "POST",
@@ -490,10 +521,12 @@ namespace FjWorkerService1.Servers.Wcs {
                 var httpOk = response.IsSuccessStatusCode;
                 var (bizOk, bizCode, bizMsg) = ParseAidukUpImgResponse(responseContent);
 
-                var requestHeaders = $"Content-Type: multipart/form-data\r\nseckey: {secKey}";
+                requestHeaders = $"Content-Type: multipart/form-data\r\nseckey: {secKey}";
 
                 if (httpOk && bizOk) {
                     var msg = $"Aiduk 上传图片成功，业务码: {bizCode}，消息: {bizMsg}";
+                    LogResponseSummary("UploadImage", ApiRequestStatus.Success, 0, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, msg);
+                    LogApiAccessRecord("UploadImage", ApiRequestStatus.Success, 0, requestUrl, requestHeaders, requestBody, responseContent, stopwatch.ElapsedMilliseconds, "-", msg);
 
                     return new WcsApiResponse {
                         RequestStatus = ApiRequestStatus.Success,
@@ -517,6 +550,8 @@ namespace FjWorkerService1.Servers.Wcs {
                 var failMsg = httpOk
                     ? $"Aiduk 上传图片失败，业务码: {bizCode}，消息: {bizMsg}"
                     : $"Aiduk 上传图片失败，HTTP 状态码: {(int)response.StatusCode}";
+                LogResponseSummary("UploadImage", ApiRequestStatus.Failure, 0, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, failMsg);
+                LogApiAccessRecord("UploadImage", ApiRequestStatus.Failure, 0, requestUrl, requestHeaders, requestBody, responseContent, stopwatch.ElapsedMilliseconds, "-", failMsg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -545,6 +580,8 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 上传图片已取消";
+                _logger.LogWarning("[Api][Aiduk][UploadImage] 已取消 barcode={Barcode}", barcode);
+                LogApiAccessRecord("UploadImage", ApiRequestStatus.Exception, 0, requestUrl, requestHeaders, requestBody, msg, stopwatch.ElapsedMilliseconds, "-", msg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -567,6 +604,8 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 上传图片超时";
+                _logger.LogError("[Api][Aiduk][UploadImage] 超时 barcode={Barcode}", barcode);
+                LogApiAccessRecord("UploadImage", ApiRequestStatus.Exception, 0, requestUrl, requestHeaders, requestBody, msg, stopwatch.ElapsedMilliseconds, "-", msg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -588,8 +627,10 @@ namespace FjWorkerService1.Servers.Wcs {
             }
             catch (Exception ex) {
                 stopwatch.Stop();
+                _logger.LogError(ex, "[Api][Aiduk][UploadImage] 异常 barcode={Barcode}", barcode);
 
                 var detailedMessage = ApiRequestHelper.GetDetailedExceptionMessage(ex);
+                LogApiAccessRecord("UploadImage", ApiRequestStatus.Exception, 0, requestUrl, requestHeaders, requestBody, ex.ToString(), stopwatch.ElapsedMilliseconds, "-", detailedMessage);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -863,6 +904,80 @@ namespace FjWorkerService1.Servers.Wcs {
 
             baseUrl = raw;
             return true;
+        }
+
+        private void LogResponseSummary(
+            string operation,
+            ApiRequestStatus status,
+            long parcelId,
+            string requestUrl,
+            int statusCode,
+            long durationMs,
+            string message) {
+            var normalizedMessage = Truncate(message, 300);
+            if (status == ApiRequestStatus.Success) {
+                _logger.LogInformation(
+                    "[Api][Aiduk][{Operation}][RESP] status={Status} parcelId={ParcelId} http={HttpStatusCode} durationMs={DurationMs} url={Url} message={Message}",
+                    operation, status, parcelId, statusCode, durationMs, requestUrl, normalizedMessage);
+                return;
+            }
+
+            _logger.LogWarning(
+                "[Api][Aiduk][{Operation}][RESP] status={Status} parcelId={ParcelId} http={HttpStatusCode} durationMs={DurationMs} url={Url} message={Message}",
+                operation, status, parcelId, statusCode, durationMs, requestUrl, normalizedMessage);
+        }
+
+        private void LogApiAccessRecord(
+            string operation,
+            ApiRequestStatus status,
+            long parcelId,
+            string requestUrl,
+            string requestHeaders,
+            string requestBody,
+            string responseBody,
+            long durationMs,
+            string parsedChuteId,
+            string message) {
+            var sanitizedHeaders = SanitizeRequestHeaders(requestHeaders);
+            var normalizedHeaders = Truncate(sanitizedHeaders, 1000);
+            var normalizedRequestBody = Truncate(requestBody, 4000);
+            var normalizedResponseBody = Truncate(responseBody, 4000);
+            var normalizedMessage = Truncate(message, 300);
+
+            if (status == ApiRequestStatus.Success) {
+                _logger.LogInformation(
+                    "[Api][爱度科][{操作}][访问记录] 状态={状态} 包裹Id={包裹Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 提示={提示}",
+                    operation, status, parcelId, requestUrl, normalizedHeaders, normalizedRequestBody, normalizedResponseBody, durationMs, parsedChuteId, normalizedMessage);
+                return;
+            }
+
+            if (status == ApiRequestStatus.Exception) {
+                _logger.LogError(
+                    "[Api][爱度科][{操作}][访问记录] 状态={状态} 包裹Id={包裹Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 提示={提示}",
+                    operation, status, parcelId, requestUrl, normalizedHeaders, normalizedRequestBody, normalizedResponseBody, durationMs, parsedChuteId, normalizedMessage);
+                return;
+            }
+
+            _logger.LogWarning(
+                "[Api][爱度科][{操作}][访问记录] 状态={状态} 包裹Id={包裹Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 提示={提示}",
+                operation, status, parcelId, requestUrl, normalizedHeaders, normalizedRequestBody, normalizedResponseBody, durationMs, parsedChuteId, normalizedMessage);
+        }
+
+        private static string SanitizeRequestHeaders(string headers) {
+            if (string.IsNullOrWhiteSpace(headers)) {
+                return string.Empty;
+            }
+
+            return SensitiveHeaderRegex.Replace(headers, "$1***");
+        }
+
+        private static string Truncate(string text, int maxLength) {
+            if (string.IsNullOrWhiteSpace(text)) {
+                return string.Empty;
+            }
+
+            var normalized = text.Replace("\r", " ").Replace("\n", " ");
+            return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "...";
         }
     }
 }

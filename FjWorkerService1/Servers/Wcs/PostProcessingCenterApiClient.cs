@@ -1,5 +1,4 @@
 using System.Text;
-using Newtonsoft.Json;
 using System.Diagnostics;
 using FjWorkerService1.Enums;
 using FjWorkerService1.Helpers;
@@ -22,6 +21,9 @@ namespace FjWorkerService1.Servers.Wcs;
 /// Configuration loaded from LiteDB with hot reload support
 /// </summary>
 public class PostProcessingCenterApiClient : IWcs {
+    private static readonly Regex SensitiveHeaderRegex = new(
+        @"(?im)^(\s*(authorization|seckey|token)\s*:\s*).+$",
+        RegexOptions.Compiled);
     private readonly HttpClient _httpClient;
     private readonly ILogger<PostProcessingCenterApiClient> _logger;
     private IConfiguration _config;
@@ -164,6 +166,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             // 生成请求头信息用于日志记录
             var requestHeaders = "Content-Type: text/xml; charset=utf-8";
+            LogApiRequest("ScanParcel", parcelId, barcode, config.Url, requestHeaders, soapRequest);
 
             // 生成curl命令
             var curlCommand = ApiRequestHelper.GenerateFormattedCurl(
@@ -188,6 +191,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             if (response.IsSuccessStatusCode) {
                 _logger.LogInformation("扫描包裹成功（邮政处理中心），条码: {Barcode}", barcode);
+                LogApiResponseSummary("ScanParcel", ApiRequestStatus.Success, parcelId, barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, "-", "扫描成功");
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Success,
@@ -208,6 +212,7 @@ public class PostProcessingCenterApiClient : IWcs {
             else {
                 _logger.LogWarning("扫描包裹失败（邮政处理中心），条码: {Barcode}, 状态码: {StatusCode}",
                     barcode, response.StatusCode);
+                LogApiResponseSummary("ScanParcel", ApiRequestStatus.Failure, parcelId, barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, "-", $"Scan Error: {response.StatusCode}");
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -265,6 +270,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 },
                 soapRequest);
             curlCommand = $"# Exception occurred during request - Curl command for retry:\n{curlCommand}";
+            LogApiResponseSummary("ScanParcel", ApiRequestStatus.Exception, parcelId, barcode, config.Url, null, requestHeaders, soapRequest, ex.ToString(), stopwatch.ElapsedMilliseconds, "-", detailedMessage);
 
             return new WcsApiResponse {
                 RequestStatus = ApiRequestStatus.Exception,
@@ -302,9 +308,7 @@ public class PostProcessingCenterApiClient : IWcs {
         var requestTime = DateTime.Now;
 
         try {
-            _logger.LogInformation("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}\n",
-                parcelId, dwsData.Barcode);
-            _logger.LogDebug("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}",
+            _logger.LogInformation("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}",
                 parcelId, dwsData.Barcode);
 
             // 先提交扫描信息
@@ -334,6 +338,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             // 生成请求头信息用于日志记录
             var requestHeaders = "Content-Type: text/xml; charset=utf-8";
+            LogApiRequest("RequestChute", parcelId, dwsData.Barcode, config.Url, requestHeaders, soapRequest);
 
             // 生成curl命令
             var curlCommand = ApiRequestHelper.GenerateFormattedCurl(
@@ -360,14 +365,11 @@ public class PostProcessingCenterApiClient : IWcs {
             // 提取格口信息
             var chute = ExtractChuteFromResponse(responseContent);
             var isSuccess = !string.IsNullOrEmpty(chute);
-            _logger.LogError(
-                $"conf:{JsonConvert.SerializeObject(config)},content:{soapRequest},curlCommand:{curlCommand}");
-            _logger.LogError(
-                $"response.IsSuccessStatusCode:{response.IsSuccessStatusCode},chute:{chute},responseContent:{responseContent}");
             if (response.IsSuccessStatusCode && isSuccess) {
                 _logger.LogInformation(
                     "请求格口成功（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}, 格口: {Chute}, 耗时: {Duration}ms",
                     parcelId, dwsData.Barcode, chute, stopwatch.ElapsedMilliseconds);
+                LogApiResponseSummary("RequestChute", ApiRequestStatus.Success, parcelId, dwsData.Barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, chute ?? "-", $"格口={chute}");
 
                 //需要在这里加上格口的解析
                 if (!string.IsNullOrWhiteSpace(responseContent)) {
@@ -412,13 +414,13 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
             else {
                 _logger.LogWarning(
                     "请求格口失败（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}, 状态码: {StatusCode}, 耗时: {Duration}ms",
                     parcelId, dwsData.Barcode, response.StatusCode, stopwatch.ElapsedMilliseconds);
+                LogApiResponseSummary("RequestChute", ApiRequestStatus.Failure, parcelId, dwsData.Barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, chute ?? "-", $"Chute Request Error: {response.StatusCode}");
 
                 var wcsApiResponse = new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -436,7 +438,6 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
         }
@@ -481,6 +482,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 },
                 soapRequest);
             curlCommand = $"# Exception occurred during request - Curl command for retry:\n{curlCommand}";
+            LogApiResponseSummary("RequestChute", ApiRequestStatus.Exception, parcelId, dwsData.Barcode, config.Url, null, requestHeaders, soapRequest, ex.ToString(), stopwatch.ElapsedMilliseconds, "-", detailedMessage);
 
             var wcsApiResponse = new WcsApiResponse {
                 RequestStatus = ApiRequestStatus.Exception,
@@ -498,11 +500,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 DurationMs = stopwatch.ElapsedMilliseconds,
                 FormattedCurl = curlCommand,
             };
-            _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
             return wcsApiResponse;
-        }
-        finally {
-            _logger.LogInformation("-----------------\n");
         }
     }
 
@@ -563,6 +561,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             // 生成请求头信息用于日志记录
             var requestHeaders = "Content-Type: text/xml; charset=utf-8";
+            LogApiRequest("NotifyChuteLanding", parcelId, barcode, config.Url, requestHeaders, soapRequest);
 
             // 生成curl命令
             var curlCommand = ApiRequestHelper.GenerateFormattedCurl(
@@ -590,6 +589,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 _logger.LogInformation(
                     "落格回调成功（邮政处理中心），包裹ID: {ParcelId}, 格口: {ChuteId}, 条码: {Barcode}",
                     parcelId, chuteId, barcode);
+                LogApiResponseSummary("NotifyChuteLanding", ApiRequestStatus.Success, parcelId, barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, chuteId, $"chuteId={chuteId}");
 
                 var wcsApiResponse = new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Success,
@@ -606,13 +606,13 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
             else {
                 _logger.LogWarning(
                     "落格回调失败（邮政处理中心），包裹ID: {ParcelId}, 格口: {ChuteId}, 状态码: {StatusCode}",
                     parcelId, chuteId, response.StatusCode);
+                LogApiResponseSummary("NotifyChuteLanding", ApiRequestStatus.Failure, parcelId, barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, chuteId, $"Chute landing notification error: {response.StatusCode}");
 
                 var wcsApiResponse = new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -630,7 +630,6 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
         }
@@ -689,6 +688,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 },
                 soapRequest);
             curlCommand = $"# Exception occurred during request - Curl command for retry:\n{curlCommand}";
+            LogApiResponseSummary("NotifyChuteLanding", ApiRequestStatus.Exception, parcelId, barcode, config.Url, null, requestHeaders, soapRequest, ex.ToString(), stopwatch.ElapsedMilliseconds, chuteId, detailedMessage);
 
             var wcsApiResponse = new WcsApiResponse {
                 RequestStatus = ApiRequestStatus.Exception,
@@ -706,11 +706,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 DurationMs = stopwatch.ElapsedMilliseconds,
                 FormattedCurl = curlCommand,
             };
-            _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
             return wcsApiResponse;
-        }
-        finally {
-            _logger.LogInformation("-----------------\n");
         }
     }
 
@@ -757,6 +753,107 @@ public class PostProcessingCenterApiClient : IWcs {
         </web:{methodName}>
     </soapenv:Body>
 </soapenv:Envelope>";
+    }
+
+    private void LogApiRequest(string operation, long parcelId, string? barcode, string url, string requestHeaders, string requestBody) {
+        var truncatedHeaders = Truncate(SanitizeRequestHeaders(requestHeaders), 1000);
+        var truncatedRequestBody = Truncate(requestBody, 4000);
+        _logger.LogInformation(
+            "[Api][邮政处理中心][{操作}][请求] 包裹Id={包裹Id} 条码={条码} 地址={地址} 请求头={请求头} 请求体={请求体}",
+            operation,
+            parcelId,
+            barcode ?? string.Empty,
+            url,
+            truncatedHeaders,
+            truncatedRequestBody);
+    }
+
+    private void LogApiResponseSummary(
+        string operation,
+        ApiRequestStatus status,
+        long parcelId,
+        string? barcode,
+        string url,
+        int? statusCode,
+        string requestHeaders,
+        string requestBody,
+        string responseBody,
+        long durationMs,
+        string parsedChuteId,
+        string message) {
+        var codeText = statusCode?.ToString() ?? "-";
+        var truncatedHeaders = Truncate(SanitizeRequestHeaders(requestHeaders), 1000);
+        var truncatedRequestBody = Truncate(requestBody, 4000);
+        var truncatedResponseBody = Truncate(responseBody, 4000);
+        var normalizedMessage = Truncate(message, 300);
+
+        if (status == ApiRequestStatus.Success) {
+            _logger.LogInformation(
+                "[Api][邮政处理中心][{操作}][响应] 状态={状态} 包裹Id={包裹Id} 条码={条码} HTTP状态码={HTTP状态码} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 提示={提示}",
+                operation,
+                status,
+                parcelId,
+                barcode ?? string.Empty,
+                codeText,
+                durationMs,
+                parsedChuteId,
+                url,
+                truncatedHeaders,
+                truncatedRequestBody,
+                truncatedResponseBody,
+                normalizedMessage);
+            return;
+        }
+
+        if (status == ApiRequestStatus.Exception) {
+            _logger.LogError(
+                "[Api][邮政处理中心][{操作}][响应] 状态={状态} 包裹Id={包裹Id} 条码={条码} HTTP状态码={HTTP状态码} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 提示={提示}",
+                operation,
+                status,
+                parcelId,
+                barcode ?? string.Empty,
+                codeText,
+                durationMs,
+                parsedChuteId,
+                url,
+                truncatedHeaders,
+                truncatedRequestBody,
+                truncatedResponseBody,
+                normalizedMessage);
+            return;
+        }
+
+        _logger.LogWarning(
+            "[Api][邮政处理中心][{操作}][响应] 状态={状态} 包裹Id={包裹Id} 条码={条码} HTTP状态码={HTTP状态码} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 提示={提示}",
+            operation,
+            status,
+            parcelId,
+            barcode ?? string.Empty,
+            codeText,
+            durationMs,
+            parsedChuteId,
+            url,
+            truncatedHeaders,
+            truncatedRequestBody,
+            truncatedResponseBody,
+            normalizedMessage);
+    }
+
+    private static string SanitizeRequestHeaders(string headers) {
+        if (string.IsNullOrWhiteSpace(headers)) {
+            return string.Empty;
+        }
+
+        return SensitiveHeaderRegex.Replace(headers, "$1***");
+    }
+
+    private static string Truncate(string text, int maxLength) {
+        if (string.IsNullOrWhiteSpace(text)) {
+            return string.Empty;
+        }
+
+        var normalized = text.Replace("\r", " ").Replace("\n", " ");
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "...";
     }
 
     /// <summary>

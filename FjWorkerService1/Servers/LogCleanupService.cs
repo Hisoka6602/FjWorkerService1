@@ -75,14 +75,6 @@ namespace FjWorkerService1.Servers {
             deletedCount += deleted1;
             failedCount += failed1;
 
-            // 清理归档目录中的旧文件
-            var archiveDirectory = Path.Combine(logDirectory, "archives");
-            if (Directory.Exists(archiveDirectory)) {
-                var (deleted2, failed2) = await CleanupDirectoryAsync(archiveDirectory, cutoffDate);
-                deletedCount += deleted2;
-                failedCount += failed2;
-            }
-
             _logger.LogInformation("日志清理完成，删除文件数: {DeletedCount}，失败数: {FailedCount}",
                 deletedCount, failedCount);
         }
@@ -93,9 +85,7 @@ namespace FjWorkerService1.Servers {
                 var failedCount = 0;
 
                 try {
-                    var files = Directory.GetFiles(directory, "*.log");
-
-                    foreach (var file in files) {
+                    foreach (var file in Directory.EnumerateFiles(directory, "*.log", SearchOption.AllDirectories)) {
                         try {
                             var fileInfo = new FileInfo(file);
                             if (fileInfo.LastWriteTime < cutoffDate) {
