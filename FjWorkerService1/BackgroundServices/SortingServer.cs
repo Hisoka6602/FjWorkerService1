@@ -15,6 +15,7 @@ using System.Collections.Concurrent;
 using FjWorkerService1.Models.Parcel;
 using FjWorkerService1.Models.Sorting;
 using FjWorkerService1.Servers.Sorter;
+using NLog;
 
 namespace FjWorkerService1.BackgroundServices {
 
@@ -25,6 +26,7 @@ namespace FjWorkerService1.BackgroundServices {
         private readonly ILogger<SortingServer> _logger;
         private readonly IOptionsMonitor<DataFusionOptions> _dataFusionOptions;
         private readonly string _logsDirectoryPath;
+        private readonly Logger _apiLogger;
         private static readonly TimeSpan LogCleanupInterval = TimeSpan.FromHours(1);
         private static readonly TimeSpan LogRetention = TimeSpan.FromDays(2);
         private const int ParcelInfoUpdateMaxAttempts = 64;
@@ -41,6 +43,7 @@ namespace FjWorkerService1.BackgroundServices {
             _wcs = wcs;
             _logger = logger;
             _dataFusionOptions = dataFusionOptions;
+            _apiLogger = LogManager.GetLogger("FjWorkerService1.Servers.Wcs.SortingServerApi");
 
             _sorter.Disconnected += (sender, args) => {
                 _logger.LogWarning($"分拣程序断开连接");
@@ -245,7 +248,7 @@ namespace FjWorkerService1.BackgroundServices {
             var responsePreview = Truncate(response.ResponseBody ?? string.Empty, 300);
 
             if (response.RequestStatus == ApiRequestStatus.Success) {
-                _logger.LogInformation(
+                _apiLogger.Info(
                     "[Api][{Operation}] success parcelId={ParcelId} barcode={Barcode} statusCode={StatusCode} durationMs={DurationMs} message={Message}",
                     operation,
                     parcelId,
@@ -257,7 +260,7 @@ namespace FjWorkerService1.BackgroundServices {
             }
 
             if (response.RequestStatus == ApiRequestStatus.Exception) {
-                _logger.LogError(
+                _apiLogger.Error(
                     "[Api][{Operation}] exception parcelId={ParcelId} barcode={Barcode} statusCode={StatusCode} durationMs={DurationMs} message={Message} response={ResponsePreview}",
                     operation,
                     parcelId,
@@ -269,7 +272,7 @@ namespace FjWorkerService1.BackgroundServices {
                 return;
             }
 
-            _logger.LogWarning(
+            _apiLogger.Warn(
                 "[Api][{Operation}] failed parcelId={ParcelId} barcode={Barcode} statusCode={StatusCode} durationMs={DurationMs} message={Message} response={ResponsePreview}",
                 operation,
                 parcelId,
