@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace FjWorkerService1.Helpers;
 
 internal sealed class BoundedEventDispatcher : IDisposable {
+    private static readonly TimeSpan DisposeDrainTimeout = TimeSpan.FromSeconds(5);
     private readonly ILogger _logger;
     private readonly string _name;
     private readonly CancellationTokenSource _cts = new();
@@ -25,7 +26,7 @@ internal sealed class BoundedEventDispatcher : IDisposable {
         var bounded = new BoundedChannelOptions(capacity) {
             SingleReader = false,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.DropOldest
+            FullMode = BoundedChannelFullMode.DropWrite
         };
         _channel = Channel.CreateBounded<Action>(bounded);
 
@@ -81,13 +82,18 @@ internal sealed class BoundedEventDispatcher : IDisposable {
         }
 
         try {
-            _cts.Cancel();
             _channel.Writer.TryComplete();
+            if (!Task.WaitAll(_workers, DisposeDrainTimeout)) {
+                _logger.LogWarning("[{Dispatcher}] 事件分发器停止超时，尝试强制取消剩余工作。", _name);
+                _cts.Cancel();
+                Task.WaitAll(_workers, TimeSpan.FromSeconds(1));
+            }
         }
         catch {
             // ignore
         }
         finally {
+            try { _cts.Cancel(); } catch { /* ignore */ }
             try { _cts.Dispose(); } catch { /* ignore */ }
         }
     }
