@@ -55,7 +55,7 @@ namespace FjWorkerService1.BackgroundServices {
                 var storedParcelInfo = _parcelInfos.AddOrUpdate(
                     message.ParcelId,
                     parcelInfo,
-                    (key, existingParcelInfo) => existingParcelInfo.IsDwsBound ? existingParcelInfo : parcelInfo);
+                    (_, existingParcelInfo) => existingParcelInfo.IsDwsBound ? existingParcelInfo : parcelInfo);
                 _logger.LogInformation($"检测到包裹: {JsonConvert.SerializeObject(storedParcelInfo)}");
             };
             _sorter.SortingCompleted += async (sender, message) => {
