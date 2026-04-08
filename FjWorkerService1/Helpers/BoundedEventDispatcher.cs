@@ -81,27 +81,17 @@ internal sealed class BoundedEventDispatcher : IDisposable {
             return;
         }
 
-        var cancelled = false;
         try {
             _channel.Writer.TryComplete();
-            if (Task.WaitAll(_workers, DisposeDrainTimeout) is false) {
+            if (!Task.WaitAll(_workers, DisposeDrainTimeout)) {
                 _logger.LogWarning("[{Dispatcher}] 事件分发器停止超时，尝试强制取消剩余工作。", _name);
                 _cts.Cancel();
-                cancelled = true;
                 Task.WaitAll(_workers, TimeSpan.FromSeconds(1));
             }
         }
         catch {
             // ignore
-            if (!cancelled) {
-                try {
-                    _cts.Cancel();
-                    cancelled = true;
-                }
-                catch {
-                    // ignore
-                }
-            }
+            try { _cts.Cancel(); } catch { /* ignore */ }
         }
         finally {
             try { _cts.Dispose(); } catch { /* ignore */ }
