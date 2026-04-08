@@ -307,8 +307,6 @@ public class PostProcessingCenterApiClient : IWcs {
         try {
             _logger.LogInformation("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}",
                 parcelId, dwsData.Barcode);
-            _logger.LogDebug("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}",
-                parcelId, dwsData.Barcode);
 
             // 先提交扫描信息
             await ScanParcelAsync(parcelId, dwsData.Barcode, cancellationToken).ConfigureAwait(false);
@@ -368,7 +366,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 _logger.LogInformation(
                     "请求格口成功（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}, 格口: {Chute}, 耗时: {Duration}ms",
                     parcelId, dwsData.Barcode, chute, stopwatch.ElapsedMilliseconds);
-                LogApiResponseSummary("RequestChute", ApiRequestStatus.Success, parcelId, dwsData.Barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, chute, $"格口={chute}");
+                LogApiResponseSummary("RequestChute", ApiRequestStatus.Success, parcelId, dwsData.Barcode, config.Url, (int)response.StatusCode, requestHeaders, soapRequest, responseContent, stopwatch.ElapsedMilliseconds, chute ?? "-", $"格口={chute}");
 
                 //需要在这里加上格口的解析
                 if (!string.IsNullOrWhiteSpace(responseContent)) {
@@ -756,7 +754,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
     private void LogApiRequest(string operation, long parcelId, string? barcode, string url, string requestHeaders, string requestBody) {
         _logger.LogInformation(
-            "[Api][PostProcessingCenter][{Operation}][REQ] parcelId={ParcelId} barcode={Barcode} url={Url} requestHeaders={RequestHeaders} requestBody={RequestBody}",
+            "[Api][邮政处理中心][{操作}][请求] 包裹Id={包裹Id} 条码={条码} 地址={地址} 请求头={请求头} 请求体={请求体}",
             operation,
             parcelId,
             barcode ?? string.Empty,
@@ -783,7 +781,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
         if (status == ApiRequestStatus.Success) {
             _logger.LogInformation(
-                "[Api][PostProcessingCenter][{Operation}][RESP] status={Status} parcelId={ParcelId} barcode={Barcode} http={StatusCode} durationMs={DurationMs} parsedChuteId={ParsedChuteId} url={Url} requestHeaders={RequestHeaders} requestBody={RequestBody} responseBody={ResponseBody} message={Message}",
+                "[Api][邮政处理中心][{操作}][响应] 状态={状态} 包裹Id={包裹Id} 条码={条码} HTTP状态码={HTTP状态码} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 提示={提示}",
                 operation,
                 status,
                 parcelId,
@@ -801,7 +799,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
         if (status == ApiRequestStatus.Exception) {
             _logger.LogError(
-                "[Api][PostProcessingCenter][{Operation}][RESP] status={Status} parcelId={ParcelId} barcode={Barcode} http={StatusCode} durationMs={DurationMs} parsedChuteId={ParsedChuteId} url={Url} requestHeaders={RequestHeaders} requestBody={RequestBody} responseBody={ResponseBody} message={Message}",
+                "[Api][邮政处理中心][{操作}][响应] 状态={状态} 包裹Id={包裹Id} 条码={条码} HTTP状态码={HTTP状态码} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 提示={提示}",
                 operation,
                 status,
                 parcelId,
@@ -818,7 +816,7 @@ public class PostProcessingCenterApiClient : IWcs {
         }
 
         _logger.LogWarning(
-            "[Api][PostProcessingCenter][{Operation}][RESP] status={Status} parcelId={ParcelId} barcode={Barcode} http={StatusCode} durationMs={DurationMs} parsedChuteId={ParsedChuteId} url={Url} requestHeaders={RequestHeaders} requestBody={RequestBody} responseBody={ResponseBody} message={Message}",
+            "[Api][邮政处理中心][{操作}][响应] 状态={状态} 包裹Id={包裹Id} 条码={条码} HTTP状态码={HTTP状态码} 耗时毫秒={耗时毫秒} 解析格口Id={解析格口Id} 地址={地址} 请求头={请求头} 请求体={请求体} 响应体={响应体} 提示={提示}",
             operation,
             status,
             parcelId,
