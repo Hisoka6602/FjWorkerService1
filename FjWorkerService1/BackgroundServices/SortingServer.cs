@@ -27,6 +27,7 @@ namespace FjWorkerService1.BackgroundServices {
         private readonly string _logsDirectoryPath;
         private static readonly TimeSpan LogCleanupInterval = TimeSpan.FromHours(1);
         private static readonly TimeSpan LogRetention = TimeSpan.FromDays(2);
+        private const int ParcelInfoUpdateMaxAttempts = 64;
 
         //先进先出包裹队列
         private ConcurrentDictionary<long, ParcelInfo> _parcelInfos = new();
@@ -69,8 +70,8 @@ namespace FjWorkerService1.BackgroundServices {
                     if (split.Length > 0) {
                         // 取出并原子更新包裹，避免并发回调对同一对象竞争写入
                         ParcelInfo? value = null;
-                        const int maxUpdateAttempts = 64;
-                        for (var attempt = 0; attempt < maxUpdateAttempts; attempt++) {
+                        var updateRetriesExhausted = false;
+                        for (var attempt = 0; attempt < ParcelInfoUpdateMaxAttempts; attempt++) {
                             var now = DateTime.Now;
                             var candidate = _parcelInfos.FirstOrDefault(f =>
                                 string.IsNullOrEmpty(f.Value.Barcode)
@@ -93,11 +94,15 @@ namespace FjWorkerService1.BackgroundServices {
                                 break;
                             }
 
-                            if (attempt == maxUpdateAttempts - 1) {
-                                _logger.LogWarning("并发更新包裹信息达到重试上限，已放弃本次DWS融合。");
+                            if (attempt == ParcelInfoUpdateMaxAttempts - 1) {
+                                updateRetriesExhausted = true;
                             }
 
                             await Task.Yield();
+                        }
+
+                        if (updateRetriesExhausted) {
+                            _logger.LogWarning("并发更新包裹信息达到重试上限，已放弃本次DWS融合。");
                         }
 
                         if (value is not null) {
