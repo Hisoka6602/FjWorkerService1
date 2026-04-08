@@ -385,17 +385,15 @@ public class PostProcessingCenterApiClient : IWcs {
                         }
 
                         //缓存信息
-                        if (!ParcelInfos.ContainsKey(Convert.ToInt64(parcelId))) {
-                            var parcelInfo = new PostProcessingCenterParcelInfo {
-                                MailRouteCode = parts[1],
-                                DirectionChuteCode = parts[3],
-                                MailKind = parts[5],
-                                TargetChuteId = Convert.ToInt64((parts[6][..4])),
-                                PlanId = parts[2],
-                                RequestChuteTime = DateTime.Now
-                            };
-                            ParcelInfos.TryAdd(Convert.ToInt64(parcelId), parcelInfo);
-                        }
+                        var parcelInfo = new PostProcessingCenterParcelInfo {
+                            MailRouteCode = parts[1],
+                            DirectionChuteCode = parts[3],
+                            MailKind = parts[5],
+                            TargetChuteId = Convert.ToInt64((parts[6][..4])),
+                            PlanId = parts[2],
+                            RequestChuteTime = DateTime.Now
+                        };
+                        ParcelInfos.TryAdd(Convert.ToInt64(parcelId), parcelInfo);
                     }
                 }
 

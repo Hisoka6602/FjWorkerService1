@@ -19,8 +19,10 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
         private readonly IWcs _wcs;
 
         private readonly ImageMonitoringOptions _options;
+        private readonly object _watcherSync = new();
 
         private FileSystemWatcher? _watcher;
+        private int _isStopping;
 
         public FileSystemImageMonitoringHostedService(
             ILogger<FileSystemImageMonitoringHostedService> logger,
@@ -52,13 +54,16 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
             }
 
             try {
-                _watcher = CreateWatcher(directoryPath);
-                _watcher.EnableRaisingEvents = true;
+                var watcher = CreateWatcher(directoryPath);
+                lock (_watcherSync) {
+                    _watcher = watcher;
+                    _watcher.EnableRaisingEvents = true;
+                }
 
                 _logger.LogInformation(
                     "本地图片新增监控已启动。DirectoryPath: {DirectoryPath}，IncludeSubdirectories: {IncludeSubdirectories}",
                     directoryPath,
-                    _watcher.IncludeSubdirectories);
+                    watcher.IncludeSubdirectories);
 
                 await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false);
             }
@@ -69,6 +74,7 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
                 _logger.LogError(ex, "本地图片新增监控运行异常。");
             }
             finally {
+                Interlocked.Exchange(ref _isStopping, 1);
                 SafeDisposeWatcher();
                 _logger.LogInformation("本地图片新增监控已停止。");
             }
@@ -76,6 +82,7 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
 
         public override Task StopAsync(CancellationToken cancellationToken) {
             // 退出监控：释放资源，不影响��主关闭
+            Interlocked.Exchange(ref _isStopping, 1);
             SafeDisposeWatcher();
             return base.StopAsync(cancellationToken);
         }
@@ -131,14 +138,29 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
         private void OnError(object sender, ErrorEventArgs e) {
             // 监控器内部错误建议重建，提升可用性
             try {
+                if (Volatile.Read(ref _isStopping) == 1) {
+                    return;
+                }
+
                 _logger.LogError(e.GetException(), "文件系统监控发生错误，将尝试重建监控器。");
 
-                var directoryPath = _watcher?.Path;
+                string? directoryPath;
+                lock (_watcherSync) {
+                    directoryPath = _watcher?.Path;
+                }
                 SafeDisposeWatcher();
 
                 if (!string.IsNullOrWhiteSpace(directoryPath) && Directory.Exists(directoryPath)) {
-                    _watcher = CreateWatcher(directoryPath);
-                    _watcher.EnableRaisingEvents = true;
+                    var watcher = CreateWatcher(directoryPath);
+                    lock (_watcherSync) {
+                        if (Volatile.Read(ref _isStopping) == 1) {
+                            watcher.Dispose();
+                            return;
+                        }
+
+                        _watcher = watcher;
+                        _watcher.EnableRaisingEvents = true;
+                    }
 
                     _logger.LogInformation("文件系统监控器已重建。DirectoryPath: {DirectoryPath}", directoryPath);
                 }
@@ -159,17 +181,22 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
 
         private void SafeDisposeWatcher() {
             try {
-                if (_watcher is null) {
+                FileSystemWatcher? watcher;
+                lock (_watcherSync) {
+                    watcher = _watcher;
+                    _watcher = null;
+                }
+
+                if (watcher is null) {
                     return;
                 }
 
-                _watcher.EnableRaisingEvents = false;
+                watcher.EnableRaisingEvents = false;
 
-                _watcher.Created -= OnCreated;
-                _watcher.Error -= OnError;
+                watcher.Created -= OnCreated;
+                watcher.Error -= OnError;
 
-                _watcher.Dispose();
-                _watcher = null;
+                watcher.Dispose();
             }
             catch (Exception ex) {
                 // Stop 阶段禁止抛出影响宿主关闭
