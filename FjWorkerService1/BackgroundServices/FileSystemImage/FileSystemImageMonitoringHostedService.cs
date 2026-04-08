@@ -81,7 +81,7 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
         }
 
         public override Task StopAsync(CancellationToken cancellationToken) {
-            // 退出监控：释放资源，不影响��主关闭
+            // 退出监控：释放资源，不影响宿主关闭
             Interlocked.Exchange(ref _isStopping, 1);
             SafeDisposeWatcher();
             return base.StopAsync(cancellationToken);
