@@ -1,6 +1,7 @@
-﻿using System.Text;
+using System.Text;
 using Newtonsoft.Json;
 using System.Text.Json;
+using System.Threading;
 using TouchSocket.Core;
 using TouchSocket.Sockets;
 using FjWorkerService1.Enums;
@@ -18,6 +19,7 @@ namespace FjWorkerService1.Servers.Sorter {
 
         private TcpService? _server;
         private TcpClient? _client;
+        private int _connectStarted;
 
         // TouchSocket 4.0.4: 不同模型下连接对象类型可能不同，这里用 object 存，发送/状态用 dynamic 访问。
         private readonly ConcurrentDictionary<string, object> _clients = new();
@@ -45,18 +47,18 @@ namespace FjWorkerService1.Servers.Sorter {
 
         public void Dispose() {
             try {
-                if (_client != null) {
-                    _client.Received -= OnClientReceived;
-                    _client.SafeDispose();
-                    _client = null;
+                var client = Interlocked.Exchange(ref _client, null);
+                if (client != null) {
+                    client.Received -= OnClientReceived;
+                    client.SafeDispose();
                 }
 
-                if (_server != null) {
-                    _server.Connected -= OnServerClientConnected;
-                    _server.Received -= OnServerReceived;
+                var server = Interlocked.Exchange(ref _server, null);
+                if (server != null) {
+                    server.Connected -= OnServerClientConnected;
+                    server.Received -= OnServerReceived;
 
-                    _server.SafeDispose();
-                    _server = null;
+                    server.SafeDispose();
                 }
 
                 _clients.Clear();
@@ -68,19 +70,27 @@ namespace FjWorkerService1.Servers.Sorter {
 
         public async Task ConnectAsync(CancellationToken cancellationToken = default) {
             cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.CompareExchange(ref _connectStarted, 1, 0) != 0) {
+                return;
+            }
 
-            switch (Config.Mode) {
-                case ConnectType.Server:
-                    await StartServerAsync(cancellationToken).ConfigureAwait(false);
-                    break;
+            try {
+                switch (Config.Mode) {
+                    case ConnectType.Server:
+                        await StartServerAsync(cancellationToken).ConfigureAwait(false);
+                        break;
 
-                case ConnectType.Client:
-                    // 客户端模式：无限重连 + 指数退避（最大 2s）
-                    await RunClientReconnectLoopAsync(cancellationToken).ConfigureAwait(false);
-                    break;
+                    case ConnectType.Client:
+                        // 客户端模式：无限重连 + 指数退避（最大 2s）
+                        await RunClientReconnectLoopAsync(cancellationToken).ConfigureAwait(false);
+                        break;
 
-                default:
-                    throw new NotSupportedException($"未知连接模式: {Config.Mode}");
+                    default:
+                        throw new NotSupportedException($"未知连接模式: {Config.Mode}");
+                }
+            }
+            finally {
+                Interlocked.Exchange(ref _connectStarted, 0);
             }
         }
 
@@ -90,15 +100,17 @@ namespace FjWorkerService1.Servers.Sorter {
             _logger.LogInformation("[Sorting][SEND] {Mode} -> {Ip}:{Port} {Payload}", Config.Mode, Config.Ip, Config.Port, Truncate(payload));
 
             if (Config.Mode == ConnectType.Client) {
-                if (_client is null) {
+                var client = Volatile.Read(ref _client);
+                if (client is null) {
                     _logger.LogError("未连接到排序系统（客户端模式）。");
                     return;
                 }
 
-                await SendAnyAsync(_client, payload).ConfigureAwait(false);
+                await SendAnyAsync(client, payload).ConfigureAwait(false);
             }
             else {
-                if (_server is null) {
+                var server = Volatile.Read(ref _server);
+                if (server is null) {
                     _logger.LogError("排序服务未启动（服务端模式）。");
                     return;
                 }
@@ -110,7 +122,7 @@ namespace FjWorkerService1.Servers.Sorter {
         }
 
         private async Task StartServerAsync(CancellationToken cancellationToken) {
-            if (_server != null) {
+            if (Volatile.Read(ref _server) != null) {
                 return;
             }
 
@@ -127,8 +139,14 @@ namespace FjWorkerService1.Servers.Sorter {
             await service.SetupAsync(config).ConfigureAwait(false);
             await service.StartAsync().ConfigureAwait(false);
 
-            _server = service;
-            _logger.LogInformation("[Sorting] Server started at {Ip}:{Port}", Config.Ip, Config.Port);
+            if (Interlocked.CompareExchange(ref _server, service, null) is null) {
+                _logger.LogInformation("[Sorting] Server started at {Ip}:{Port}", Config.Ip, Config.Port);
+                return;
+            }
+
+            service.Connected -= OnServerClientConnected;
+            service.Received -= OnServerReceived;
+            service.SafeDispose();
         }
 
         private async Task RunClientReconnectLoopAsync(CancellationToken cancellationToken) {
@@ -138,11 +156,11 @@ namespace FjWorkerService1.Servers.Sorter {
             while (!cancellationToken.IsCancellationRequested) {
                 try {
                     // 清理旧连接
-                    if (_client != null) {
-                        try { _client.Received -= OnClientReceived; } catch { }
-                        try { await _client.CloseAsync().ConfigureAwait(false); } catch { }
-                        try { _client.Dispose(); } catch { }
-                        _client = null;
+                    var staleClient = Interlocked.Exchange(ref _client, null);
+                    if (staleClient != null) {
+                        try { staleClient.Received -= OnClientReceived; } catch { }
+                        try { await staleClient.CloseAsync().ConfigureAwait(false); } catch { }
+                        try { staleClient.Dispose(); } catch { }
                     }
 
                     await StartClientOnceAsync(cancellationToken).ConfigureAwait(false);
@@ -188,7 +206,7 @@ namespace FjWorkerService1.Servers.Sorter {
 
         // 单次连接（失败由外层重试）
         private async Task StartClientOnceAsync(CancellationToken cancellationToken) {
-            if (_client != null) {
+            if (Volatile.Read(ref _client) != null) {
                 return;
             }
 
@@ -205,8 +223,14 @@ namespace FjWorkerService1.Servers.Sorter {
             cancellationToken.ThrowIfCancellationRequested();
             await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
-            _client = client;
-            _logger.LogInformation("[Sorting] Client connected to {Ip}:{Port}", Config.Ip, Config.Port);
+            if (Interlocked.CompareExchange(ref _client, client, null) is null) {
+                _logger.LogInformation("[Sorting] Client connected to {Ip}:{Port}", Config.Ip, Config.Port);
+                return;
+            }
+
+            client.Received -= OnClientReceived;
+            try { await client.CloseAsync().ConfigureAwait(false); } catch { }
+            try { client.Dispose(); } catch { }
         }
 
         // TouchSocket 4.0.4 的事件签名在不同子包/类型上可能不同，这里用 object + dynamic 适配
