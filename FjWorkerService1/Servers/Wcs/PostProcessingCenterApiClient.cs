@@ -1,5 +1,4 @@
 using System.Text;
-using Newtonsoft.Json;
 using System.Diagnostics;
 using FjWorkerService1.Enums;
 using FjWorkerService1.Helpers;
@@ -144,6 +143,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             // 加载配置
             var config = await GetConfigAsync().ConfigureAwait(false);
+            LogApiRequest("ScanParcel", parcelId, barcode, config.Url, "method=getYJSM");
 
             _logger.LogDebug("扫描包裹到邮政处理中心，条码: {Barcode}", barcode);
 
@@ -188,6 +188,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             if (response.IsSuccessStatusCode) {
                 _logger.LogInformation("扫描包裹成功（邮政处理中心），条码: {Barcode}", barcode);
+                LogApiResponseSummary("ScanParcel", ApiRequestStatus.Success, parcelId, barcode, config.Url, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, "扫描成功");
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Success,
@@ -208,6 +209,7 @@ public class PostProcessingCenterApiClient : IWcs {
             else {
                 _logger.LogWarning("扫描包裹失败（邮政处理中心），条码: {Barcode}, 状态码: {StatusCode}",
                     barcode, response.StatusCode);
+                LogApiResponseSummary("ScanParcel", ApiRequestStatus.Failure, parcelId, barcode, config.Url, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, $"Scan Error: {response.StatusCode}");
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -265,6 +267,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 },
                 soapRequest);
             curlCommand = $"# Exception occurred during request - Curl command for retry:\n{curlCommand}";
+            LogApiResponseSummary("ScanParcel", ApiRequestStatus.Exception, parcelId, barcode, config.Url, null, stopwatch.ElapsedMilliseconds, detailedMessage);
 
             return new WcsApiResponse {
                 RequestStatus = ApiRequestStatus.Exception,
@@ -302,7 +305,7 @@ public class PostProcessingCenterApiClient : IWcs {
         var requestTime = DateTime.Now;
 
         try {
-            _logger.LogInformation("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}\n",
+            _logger.LogInformation("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}",
                 parcelId, dwsData.Barcode);
             _logger.LogDebug("请求格口（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}",
                 parcelId, dwsData.Barcode);
@@ -312,6 +315,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             // 加载配置
             var config = await GetConfigAsync().ConfigureAwait(false);
+            LogApiRequest("RequestChute", parcelId, dwsData.Barcode, config.Url, "method=getGKCX");
 
             var seqNum = GetNextSequenceNumber();
             var yearMonth = DateTime.Now.ToString("yyyyMM");
@@ -360,14 +364,11 @@ public class PostProcessingCenterApiClient : IWcs {
             // 提取格口信息
             var chute = ExtractChuteFromResponse(responseContent);
             var isSuccess = !string.IsNullOrEmpty(chute);
-            _logger.LogError(
-                $"conf:{JsonConvert.SerializeObject(config)},content:{soapRequest},curlCommand:{curlCommand}");
-            _logger.LogError(
-                $"response.IsSuccessStatusCode:{response.IsSuccessStatusCode},chute:{chute},responseContent:{responseContent}");
             if (response.IsSuccessStatusCode && isSuccess) {
                 _logger.LogInformation(
                     "请求格口成功（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}, 格口: {Chute}, 耗时: {Duration}ms",
                     parcelId, dwsData.Barcode, chute, stopwatch.ElapsedMilliseconds);
+                LogApiResponseSummary("RequestChute", ApiRequestStatus.Success, parcelId, dwsData.Barcode, config.Url, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, $"格口={chute}");
 
                 //需要在这里加上格口的解析
                 if (!string.IsNullOrWhiteSpace(responseContent)) {
@@ -412,13 +413,13 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
             else {
                 _logger.LogWarning(
                     "请求格口失败（邮政处理中心），包裹ID: {ParcelId}, 条码: {Barcode}, 状态码: {StatusCode}, 耗时: {Duration}ms",
                     parcelId, dwsData.Barcode, response.StatusCode, stopwatch.ElapsedMilliseconds);
+                LogApiResponseSummary("RequestChute", ApiRequestStatus.Failure, parcelId, dwsData.Barcode, config.Url, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, $"Chute Request Error: {response.StatusCode}");
 
                 var wcsApiResponse = new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -436,7 +437,6 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
         }
@@ -481,6 +481,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 },
                 soapRequest);
             curlCommand = $"# Exception occurred during request - Curl command for retry:\n{curlCommand}";
+            LogApiResponseSummary("RequestChute", ApiRequestStatus.Exception, parcelId, dwsData.Barcode, config.Url, null, stopwatch.ElapsedMilliseconds, detailedMessage);
 
             var wcsApiResponse = new WcsApiResponse {
                 RequestStatus = ApiRequestStatus.Exception,
@@ -498,11 +499,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 DurationMs = stopwatch.ElapsedMilliseconds,
                 FormattedCurl = curlCommand,
             };
-            _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
             return wcsApiResponse;
-        }
-        finally {
-            _logger.LogInformation("-----------------\n");
         }
     }
 
@@ -528,6 +525,7 @@ public class PostProcessingCenterApiClient : IWcs {
 
             // 加载配置
             var config = await GetConfigAsync().ConfigureAwait(false);
+            LogApiRequest("NotifyChuteLanding", parcelId, barcode, config.Url, "method=getYJLG");
 
             // 构造落格回调SOAP请求 - 参照 PostApi.UploadInBackground
             // 参考格式: #HEAD::{DeviceId}::{barcode}::{0}::{0}::{EmployeeNumber}::{0}::{timestamp}::{routingDirection}::{lcgk}::{mailType}::{chuteCode}::{WorkshopCode}::{1}::{0}::{0}::{0}::{0}::{0}::{0}::{0}::{0}::{playId}::||#END
@@ -590,6 +588,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 _logger.LogInformation(
                     "落格回调成功（邮政处理中心），包裹ID: {ParcelId}, 格口: {ChuteId}, 条码: {Barcode}",
                     parcelId, chuteId, barcode);
+                LogApiResponseSummary("NotifyChuteLanding", ApiRequestStatus.Success, parcelId, barcode, config.Url, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, $"chuteId={chuteId}");
 
                 var wcsApiResponse = new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Success,
@@ -606,13 +605,13 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
             else {
                 _logger.LogWarning(
                     "落格回调失败（邮政处理中心），包裹ID: {ParcelId}, 格口: {ChuteId}, 状态码: {StatusCode}",
                     parcelId, chuteId, response.StatusCode);
+                LogApiResponseSummary("NotifyChuteLanding", ApiRequestStatus.Failure, parcelId, barcode, config.Url, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, $"Chute landing notification error: {response.StatusCode}");
 
                 var wcsApiResponse = new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -630,7 +629,6 @@ public class PostProcessingCenterApiClient : IWcs {
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     FormattedCurl = curlCommand,
                 };
-                _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
                 return wcsApiResponse;
             }
         }
@@ -689,6 +687,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 },
                 soapRequest);
             curlCommand = $"# Exception occurred during request - Curl command for retry:\n{curlCommand}";
+            LogApiResponseSummary("NotifyChuteLanding", ApiRequestStatus.Exception, parcelId, barcode, config.Url, null, stopwatch.ElapsedMilliseconds, detailedMessage);
 
             var wcsApiResponse = new WcsApiResponse {
                 RequestStatus = ApiRequestStatus.Exception,
@@ -706,11 +705,7 @@ public class PostProcessingCenterApiClient : IWcs {
                 DurationMs = stopwatch.ElapsedMilliseconds,
                 FormattedCurl = curlCommand,
             };
-            _logger.LogInformation(JsonConvert.SerializeObject(wcsApiResponse));
             return wcsApiResponse;
-        }
-        finally {
-            _logger.LogInformation("-----------------\n");
         }
     }
 
@@ -757,6 +752,77 @@ public class PostProcessingCenterApiClient : IWcs {
         </web:{methodName}>
     </soapenv:Body>
 </soapenv:Envelope>";
+    }
+
+    private void LogApiRequest(string operation, long parcelId, string? barcode, string url, string? details = null) {
+        _logger.LogInformation(
+            "[Api][PostProcessingCenter][{Operation}][REQ] parcelId={ParcelId} barcode={Barcode} url={Url} details={Details}",
+            operation,
+            parcelId,
+            barcode ?? string.Empty,
+            url,
+            details ?? string.Empty);
+    }
+
+    private void LogApiResponseSummary(
+        string operation,
+        ApiRequestStatus status,
+        long parcelId,
+        string? barcode,
+        string url,
+        int? statusCode,
+        long durationMs,
+        string message) {
+        var codeText = statusCode?.ToString() ?? "-";
+        var normalizedMessage = Truncate(message, 300);
+
+        if (status == ApiRequestStatus.Success) {
+            _logger.LogInformation(
+                "[Api][PostProcessingCenter][{Operation}][RESP] status={Status} parcelId={ParcelId} barcode={Barcode} http={StatusCode} durationMs={DurationMs} url={Url} message={Message}",
+                operation,
+                status,
+                parcelId,
+                barcode ?? string.Empty,
+                codeText,
+                durationMs,
+                url,
+                normalizedMessage);
+            return;
+        }
+
+        if (status == ApiRequestStatus.Exception) {
+            _logger.LogError(
+                "[Api][PostProcessingCenter][{Operation}][RESP] status={Status} parcelId={ParcelId} barcode={Barcode} http={StatusCode} durationMs={DurationMs} url={Url} message={Message}",
+                operation,
+                status,
+                parcelId,
+                barcode ?? string.Empty,
+                codeText,
+                durationMs,
+                url,
+                normalizedMessage);
+            return;
+        }
+
+        _logger.LogWarning(
+            "[Api][PostProcessingCenter][{Operation}][RESP] status={Status} parcelId={ParcelId} barcode={Barcode} http={StatusCode} durationMs={DurationMs} url={Url} message={Message}",
+            operation,
+            status,
+            parcelId,
+            barcode ?? string.Empty,
+            codeText,
+            durationMs,
+            url,
+            normalizedMessage);
+    }
+
+    private static string Truncate(string text, int maxLength) {
+        if (string.IsNullOrWhiteSpace(text)) {
+            return string.Empty;
+        }
+
+        var normalized = text.Replace("\r", " ").Replace("\n", " ");
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "...";
     }
 
     /// <summary>
