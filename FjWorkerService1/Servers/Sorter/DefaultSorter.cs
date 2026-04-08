@@ -9,6 +9,7 @@ using FjWorkerService1.Models.Conf;
 using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
 using FjWorkerService1.Models.Sorting;
+using FjWorkerService1.Helpers;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace FjWorkerService1.Servers.Sorter {
@@ -16,7 +17,7 @@ namespace FjWorkerService1.Servers.Sorter {
     public class DefaultSorter : ISorter, IDisposable {
         private readonly ILogger<DefaultSorter> _logger;
         private TcpConnectConfig Config { get; init; }
-        private readonly CancellationTokenSource _eventDispatchCts = new();
+        private readonly BoundedEventDispatcher _eventDispatcher;
 
         private TcpService? _server;
         private TcpClient? _client;
@@ -34,6 +35,7 @@ namespace FjWorkerService1.Servers.Sorter {
 
         public DefaultSorter(TcpConnectConfig config, ILogger<DefaultSorter> logger) {
             _logger = logger;
+            _eventDispatcher = new BoundedEventDispatcher(_logger, "Sorter", capacity: 4096, workers: 4);
             Config = config ?? new TcpConnectConfig {
                 Mode = ConnectType.Client,
                 Ip = "127.0.0.1",
@@ -52,12 +54,7 @@ namespace FjWorkerService1.Servers.Sorter {
                 return;
             }
 
-            try {
-                _eventDispatchCts.Cancel();
-            }
-            catch {
-                // ignore
-            }
+            try { _eventDispatcher.Dispose(); } catch { /* ignore */ }
 
             try {
                 var client = Interlocked.Exchange(ref _client, null);
@@ -78,9 +75,6 @@ namespace FjWorkerService1.Servers.Sorter {
             }
             catch {
                 // ignore
-            }
-            finally {
-                try { _eventDispatchCts.Dispose(); } catch { /* ignore */ }
             }
         }
 
@@ -364,24 +358,8 @@ namespace FjWorkerService1.Servers.Sorter {
                 return;
             }
 
-            var token = _eventDispatchCts.Token;
-            if (token.IsCancellationRequested) {
-                return;
-            }
-
             foreach (EventHandler handler in handlers.GetInvocationList()) {
-                _ = Task.Run(() => {
-                    if (token.IsCancellationRequested) {
-                        return;
-                    }
-
-                    try {
-                        handler(this, EventArgs.Empty);
-                    }
-                    catch (Exception ex) {
-                        _logger.LogError(ex, "[Sorting] Disconnected 事件订阅者执行失败");
-                    }
-                }, token);
+                _eventDispatcher.TryDispatch(() => handler(this, EventArgs.Empty));
             }
         }
 
@@ -395,24 +373,8 @@ namespace FjWorkerService1.Servers.Sorter {
                 return;
             }
 
-            var token = _eventDispatchCts.Token;
-            if (token.IsCancellationRequested) {
-                return;
-            }
-
             foreach (EventHandler<ParcelDetectedMessage> handler in handlers.GetInvocationList()) {
-                _ = Task.Run(() => {
-                    if (token.IsCancellationRequested) {
-                        return;
-                    }
-
-                    try {
-                        handler(this, message);
-                    }
-                    catch (Exception ex) {
-                        _logger.LogError(ex, "[Sorting] ParcelDetected 事件订阅者执行失败");
-                    }
-                }, token);
+                _eventDispatcher.TryDispatch(() => handler(this, message));
             }
         }
 
@@ -426,24 +388,8 @@ namespace FjWorkerService1.Servers.Sorter {
                 return;
             }
 
-            var token = _eventDispatchCts.Token;
-            if (token.IsCancellationRequested) {
-                return;
-            }
-
             foreach (EventHandler<SortingCompletedMessage> handler in handlers.GetInvocationList()) {
-                _ = Task.Run(() => {
-                    if (token.IsCancellationRequested) {
-                        return;
-                    }
-
-                    try {
-                        handler(this, message);
-                    }
-                    catch (Exception ex) {
-                        _logger.LogError(ex, "[Sorting] SortingCompleted 事件订阅者执行失败");
-                    }
-                }, token);
+                _eventDispatcher.TryDispatch(() => handler(this, message));
             }
         }
 

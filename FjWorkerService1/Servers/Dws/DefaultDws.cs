@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using FjWorkerService1.Models.Conf;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using FjWorkerService1.Helpers;
 
 namespace FjWorkerService1.Servers.Dws;
 
@@ -15,7 +16,7 @@ public sealed class DefaultDws : IDws, IDisposable {
     private readonly TcpConnectConfig _config;
     private readonly ILogger<DefaultDws> _logger;
     private readonly ConcurrentDictionary<string, object> _clients = new();
-    private readonly CancellationTokenSource _eventDispatchCts = new();
+    private readonly BoundedEventDispatcher _eventDispatcher;
     private TcpClient? _client;
     private TcpService? _server;
     private int _connectStarted;
@@ -26,6 +27,7 @@ public sealed class DefaultDws : IDws, IDisposable {
     public DefaultDws(TcpConnectConfig config, ILogger<DefaultDws> logger) {
         _config = config;
         _logger = logger;
+        _eventDispatcher = new BoundedEventDispatcher(_logger, "DWS", capacity: 4096, workers: 4);
     }
 
     public bool IsConnected => Volatile.Read(ref _isConnected) == 1;
@@ -39,15 +41,7 @@ public sealed class DefaultDws : IDws, IDisposable {
             return;
         }
 
-        try {
-            _eventDispatchCts.Cancel();
-        }
-        catch {
-            // ignore
-        }
-        finally {
-            try { _eventDispatchCts.Dispose(); } catch { /* ignore */ }
-        }
+        try { _eventDispatcher.Dispose(); } catch { /* ignore */ }
 
         // 同步 Dispose 中不执行阻塞关闭，转为异步 best-effort
         _ = SafeDisposeAsync();
@@ -242,24 +236,8 @@ public sealed class DefaultDws : IDws, IDisposable {
             return;
         }
 
-        var token = _eventDispatchCts.Token;
-        if (token.IsCancellationRequested) {
-            return;
-        }
-
         foreach (EventHandler handler in handlers.GetInvocationList()) {
-            _ = Task.Run(() => {
-                if (token.IsCancellationRequested) {
-                    return;
-                }
-
-                try {
-                    handler(this, EventArgs.Empty);
-                }
-                catch (Exception ex) {
-                    _logger.LogError(ex, "[DWS] Disconnected 事件订阅者执行失败");
-                }
-            }, token);
+            _eventDispatcher.TryDispatch(() => handler(this, EventArgs.Empty));
         }
     }
 
@@ -273,24 +251,8 @@ public sealed class DefaultDws : IDws, IDisposable {
             return;
         }
 
-        var token = _eventDispatchCts.Token;
-        if (token.IsCancellationRequested) {
-            return;
-        }
-
         foreach (EventHandler<string> handler in handlers.GetInvocationList()) {
-            _ = Task.Run(() => {
-                if (token.IsCancellationRequested) {
-                    return;
-                }
-
-                try {
-                    handler(this, message);
-                }
-                catch (Exception ex) {
-                    _logger.LogError(ex, "[DWS] MessageReceived 事件订阅者执行失败");
-                }
-            }, token);
+            _eventDispatcher.TryDispatch(() => handler(this, message));
         }
     }
 
