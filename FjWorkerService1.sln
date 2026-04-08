@@ -5,8 +5,6 @@ VisualStudioVersion = 17.14.36603.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FjWorkerService1", "FjWorkerService1\FjWorkerService1.csproj", "{DE8EAE5B-D3B1-484C-8BE9-B9D004A63154}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleApp1", "ConsoleApp1\ConsoleApp1.csproj", "{AFDC8ACC-F811-40A8-BCAD-B6426967DDCB}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -17,10 +15,6 @@ Global
 		{DE8EAE5B-D3B1-484C-8BE9-B9D004A63154}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DE8EAE5B-D3B1-484C-8BE9-B9D004A63154}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DE8EAE5B-D3B1-484C-8BE9-B9D004A63154}.Release|Any CPU.Build.0 = Release|Any CPU
-		{AFDC8ACC-F811-40A8-BCAD-B6426967DDCB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{AFDC8ACC-F811-40A8-BCAD-B6426967DDCB}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{AFDC8ACC-F811-40A8-BCAD-B6426967DDCB}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{AFDC8ACC-F811-40A8-BCAD-B6426967DDCB}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
