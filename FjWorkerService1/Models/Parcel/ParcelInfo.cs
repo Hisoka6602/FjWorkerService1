@@ -19,5 +19,9 @@ namespace FjWorkerService1.Models.Parcel {
         /// 实际落格Id
         /// </summary>
         public required long ActualChuteId { get; init; }
+        /// <summary>
+        /// 是否已绑定DWS数据
+        /// </summary>
+        public bool IsDwsBound { get; set; }
     }
 }

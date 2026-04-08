@@ -27,6 +27,7 @@ namespace FjWorkerService1.BackgroundServices {
         private readonly string _logsDirectoryPath;
         private static readonly TimeSpan LogCleanupInterval = TimeSpan.FromHours(1);
         private static readonly TimeSpan LogRetention = TimeSpan.FromDays(2);
+        private const int ParcelInfoUpdateMaxAttempts = 64;
 
         //先进先出包裹队列
         private ConcurrentDictionary<long, ParcelInfo> _parcelInfos = new();
@@ -47,23 +48,22 @@ namespace FjWorkerService1.BackgroundServices {
             _sorter.ParcelDetected += (sender, message) => {
                 var parcelInfo = new ParcelInfo {
                     ParcelId = message.ParcelId,
-
                     ChuteId = 0,
                     ActualChuteId = 0,
+                    IsDwsBound = false,
                 };
-                _parcelInfos.TryAdd(message.ParcelId, parcelInfo);
-                _logger.LogInformation($"检测到包裹: {JsonConvert.SerializeObject(parcelInfo)}");
+                var storedParcelInfo = _parcelInfos.AddOrUpdate(
+                    message.ParcelId,
+                    parcelInfo,
+                    (_, existingParcelInfo) => existingParcelInfo.IsDwsBound ? existingParcelInfo : parcelInfo);
+                _logger.LogInformation($"检测到包裹: {JsonConvert.SerializeObject(storedParcelInfo)}");
             };
             _sorter.SortingCompleted += async (sender, message) => {
                 await Task.Yield();
-                var (key, value) = _parcelInfos.FirstOrDefault(w =>
-                    w.Key.Equals(message.ParcelId));
-                if (value is not null) {
-                    await _wcs.NotifyChuteLandingAsync(value.ParcelId, message.ActualChuteId.ToString(),
-                        value.Barcode);
+                if (_parcelInfos.TryRemove(message.ParcelId, out var value)) {
+                    await _wcs.NotifyChuteLandingAsync(value.ParcelId, message.ActualChuteId.ToString(), value.Barcode);
 
                     _logger.LogInformation($"落格回调:{JsonConvert.SerializeObject(message)}");
-                    _parcelInfos.Remove(key, out var _);
                 }
             };
             _dws.MessageReceived += async (sender, s) => {
@@ -71,21 +71,45 @@ namespace FjWorkerService1.BackgroundServices {
                     _logger.LogInformation($"接收到DWS内容:{s}");
                     var split = s.Split(",");
                     if (split.Length > 0) {
-                        //取出包裹
-                        var (key, value) = _parcelInfos.FirstOrDefault(f =>
-                            string.IsNullOrEmpty(f.Value.Barcode) && DateTime.Now.Subtract(f.Value.ScannedAt).TotalMilliseconds < _dataFusionOptions.CurrentValue.Timeout);
+                        // 取出并原子更新包裹，避免并发回调对同一对象竞争写入
+                        ParcelInfo? value = null;
+                        var updateRetriesExhausted = false;
+                        for (var attempt = 0; attempt < ParcelInfoUpdateMaxAttempts; attempt++) {
+                            var now = DateTime.Now;
+                            var candidate = _parcelInfos.FirstOrDefault(f =>
+                                !f.Value.IsDwsBound
+                                && now.Subtract(f.Value.ScannedAt).TotalMilliseconds < _dataFusionOptions.CurrentValue.Timeout);
+                            if (candidate.Value is null) {
+                                break;
+                            }
+
+                            var updated = candidate.Value with {
+                                Barcode = split[0],
+                                Weight = split.Length > 1 ? Convert.ToDecimal(split[1]) : candidate.Value.Weight,
+                                Length = split.Length > 5 ? Convert.ToDecimal(split[2]) : candidate.Value.Length,
+                                Width = split.Length > 5 ? Convert.ToDecimal(split[3]) : candidate.Value.Width,
+                                Height = split.Length > 5 ? Convert.ToDecimal(split[4]) : candidate.Value.Height,
+                                Volume = split.Length > 5 ? Convert.ToDecimal(split[5]) : candidate.Value.Volume,
+                                IsDwsBound = true
+                            };
+
+                            if (_parcelInfos.TryUpdate(candidate.Key, updated, candidate.Value)) {
+                                value = updated;
+                                break;
+                            }
+
+                            if (attempt == ParcelInfoUpdateMaxAttempts - 1) {
+                                updateRetriesExhausted = true;
+                            }
+
+                            await Task.Yield();
+                        }
+
+                        if (updateRetriesExhausted) {
+                            _logger.LogWarning("并发更新包裹信息达到重试上限，已放弃本次DWS融合。");
+                        }
+
                         if (value is not null) {
-                            //赋值
-                            value.Barcode = split[0];
-                            if (split.Length > 1) {
-                                value.Weight = Convert.ToDecimal(split[1]);
-                            }
-                            if (split.Length > 5) {
-                                value.Length = Convert.ToDecimal(split[2]);
-                                value.Width = Convert.ToDecimal(split[3]);
-                                value.Height = Convert.ToDecimal(split[4]);
-                                value.Volume = Convert.ToDecimal(split[5]);
-                            }
                             //上传
                             var requestChuteAsync = await _wcs.RequestChuteAsync(value.ParcelId, new DwsData() {
                                 Barcode = value.Barcode,

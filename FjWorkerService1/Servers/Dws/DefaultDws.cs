@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using FjWorkerService1.Models.Conf;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using FjWorkerService1.Helpers;
 
 namespace FjWorkerService1.Servers.Dws;
 
@@ -15,14 +16,18 @@ public sealed class DefaultDws : IDws, IDisposable {
     private readonly TcpConnectConfig _config;
     private readonly ILogger<DefaultDws> _logger;
     private readonly ConcurrentDictionary<string, object> _clients = new();
+    private readonly BoundedEventDispatcher _eventDispatcher;
     private TcpClient? _client;
     private TcpService? _server;
+    private int _connectStarted;
+    private int _isDisposed;
 
     private int _isConnected; // 0=false, 1=true
 
     public DefaultDws(TcpConnectConfig config, ILogger<DefaultDws> logger) {
         _config = config;
         _logger = logger;
+        _eventDispatcher = new BoundedEventDispatcher(_logger, "DWS", capacity: 4096, workers: 4);
     }
 
     public bool IsConnected => Volatile.Read(ref _isConnected) == 1;
@@ -32,16 +37,41 @@ public sealed class DefaultDws : IDws, IDisposable {
     public event EventHandler? Disconnected;
 
     public void Dispose() {
+        if (Interlocked.Exchange(ref _isDisposed, 1) == 1) {
+            return;
+        }
+
+        try { _eventDispatcher.Dispose(); } catch { /* ignore */ }
+
         // 同步 Dispose 中不执行阻塞关闭，转为异步 best-effort
         _ = SafeDisposeAsync();
     }
 
     public Task ConnectAsync(CancellationToken cancellationToken = default)
-        => _config.Mode switch {
-            ConnectType.Client => RunClientReconnectLoopAsync(cancellationToken),
-            ConnectType.Server => StartServerAsync(cancellationToken),
-            _ => throw new InvalidOperationException($"不支持的连接模式：{_config.Mode}")
-        };
+        => ConnectCoreAsync(cancellationToken);
+
+    private async Task ConnectCoreAsync(CancellationToken cancellationToken) {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Interlocked.CompareExchange(ref _connectStarted, 1, 0) != 0) {
+            return;
+        }
+
+        try {
+            switch (_config.Mode) {
+                case ConnectType.Client:
+                    await RunClientReconnectLoopAsync(cancellationToken).ConfigureAwait(false);
+                    break;
+                case ConnectType.Server:
+                    await StartServerAsync(cancellationToken).ConfigureAwait(false);
+                    break;
+                default:
+                    throw new InvalidOperationException($"不支持的连接模式：{_config.Mode}");
+            }
+        }
+        finally {
+            Interlocked.Exchange(ref _connectStarted, 0);
+        }
+    }
 
     private async Task SafeDisposeAsync() {
         try {
@@ -63,7 +93,7 @@ public sealed class DefaultDws : IDws, IDisposable {
     }
 
     private async Task StartServerAsync(CancellationToken cancellationToken) {
-        if (_server != null) {
+        if (Volatile.Read(ref _server) != null) {
             return;
         }
 
@@ -80,8 +110,16 @@ public sealed class DefaultDws : IDws, IDisposable {
         await service.SetupAsync(config).ConfigureAwait(false);
         await service.StartAsync(cancellationToken).ConfigureAwait(false);
 
-        _server = service;
-        _logger.LogInformation("[DWS] Server started at {Ip}:{Port}", _config.Ip, _config.Port);
+        if (Interlocked.CompareExchange(ref _server, service, null) is null) {
+            Interlocked.Exchange(ref _isConnected, 1);
+            _logger.LogInformation("[DWS] Server started at {Ip}:{Port}", _config.Ip, _config.Port);
+            return;
+        }
+
+        service.Connected -= OnServerClientConnected;
+        service.Received -= OnServerReceived;
+        try { await service.StopAsync().ConfigureAwait(false); } catch { }
+        try { service.Dispose(); } catch { }
     }
 
     private async Task RunClientReconnectLoopAsync(CancellationToken cancellationToken) {
@@ -89,16 +127,16 @@ public sealed class DefaultDws : IDws, IDisposable {
         var maxBackoff = TimeSpan.FromSeconds(2);
 
         while (!cancellationToken.IsCancellationRequested) {
-            try {
-                // 清理旧连接
-                if (_client != null) {
-                    try { _client.Received -= OnClientReceived; } catch { }
-                    try { await _client.CloseAsync().ConfigureAwait(false); } catch { }
-                    try { _client.Dispose(); } catch { }
-                    _client = null;
-                }
+                try {
+                    // 清理旧连接
+                    var staleClient = Interlocked.Exchange(ref _client, null);
+                    if (staleClient != null) {
+                        try { staleClient.Received -= OnClientReceived; } catch { }
+                        try { await staleClient.CloseAsync().ConfigureAwait(false); } catch { }
+                        try { staleClient.Dispose(); } catch { }
+                    }
 
-                await StartClientOnceAsync(cancellationToken).ConfigureAwait(false);
+                    await StartClientOnceAsync(cancellationToken).ConfigureAwait(false);
 
                 // 连接成功后重置退避
                 backoff = TimeSpan.FromMilliseconds(100);
@@ -108,18 +146,20 @@ public sealed class DefaultDws : IDws, IDisposable {
                     await Task.Delay(200, cancellationToken).ConfigureAwait(false);
                 }
 
-                // 断开
-                if (!cancellationToken.IsCancellationRequested) {
-                    _logger.LogWarning("[DWS] Client disconnected from {Ip}:{Port}", _config.Ip, _config.Port);
-                    Disconnected?.Invoke(this, EventArgs.Empty);
-                }
+                    // 断开
+                    if (!cancellationToken.IsCancellationRequested) {
+                        Interlocked.Exchange(ref _isConnected, 0);
+                        _logger.LogWarning("[DWS] Client disconnected from {Ip}:{Port}", _config.Ip, _config.Port);
+                        PublishDisconnected();
+                    }
             }
             catch (OperationCanceledException) {
                 break;
             }
             catch (Exception ex) {
+                Interlocked.Exchange(ref _isConnected, 0);
                 _logger.LogWarning(ex, "[DWS] Client connect failed, will retry: {Ip}:{Port}", _config.Ip, _config.Port);
-                Disconnected?.Invoke(this, EventArgs.Empty);
+                PublishDisconnected();
             }
 
             if (cancellationToken.IsCancellationRequested) {
@@ -140,7 +180,7 @@ public sealed class DefaultDws : IDws, IDisposable {
     }
 
     private async Task StartClientOnceAsync(CancellationToken cancellationToken) {
-        if (_client != null) {
+        if (Volatile.Read(ref _client) != null) {
             return;
         }
 
@@ -157,15 +197,22 @@ public sealed class DefaultDws : IDws, IDisposable {
         cancellationToken.ThrowIfCancellationRequested();
         await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
-        _client = client;
-        _logger.LogInformation("[DWS] Client connected to {Ip}:{Port}", _config.Ip, _config.Port);
+        if (Interlocked.CompareExchange(ref _client, client, null) is null) {
+            Interlocked.Exchange(ref _isConnected, 1);
+            _logger.LogInformation("[DWS] Client connected to {Ip}:{Port}", _config.Ip, _config.Port);
+            return;
+        }
+
+        client.Received -= OnClientReceived;
+        try { await client.CloseAsync().ConfigureAwait(false); } catch { }
+        try { client.Dispose(); } catch { }
     }
 
     private Task OnServerReceived(object client, ReceivedDataEventArgs e) {
         var msg = TryGetMessage(e);
         if (!string.IsNullOrWhiteSpace(msg)) {
             _logger.LogInformation("[DWS][RECV][SERVER] {Payload}", Truncate(msg));
-            MessageReceived?.Invoke(null, msg);
+            PublishMessageReceived(msg);
         }
         return Task.CompletedTask;
     }
@@ -174,9 +221,39 @@ public sealed class DefaultDws : IDws, IDisposable {
         var msg = TryGetMessage(e);
         if (!string.IsNullOrWhiteSpace(msg)) {
             _logger.LogInformation("[DWS][RECV][CLIENT] {Payload}", Truncate(msg));
-            MessageReceived?.Invoke(null, msg);
+            PublishMessageReceived(msg);
         }
         return Task.CompletedTask;
+    }
+
+    private void PublishDisconnected() {
+        if (Volatile.Read(ref _isDisposed) == 1) {
+            return;
+        }
+
+        var handlers = Disconnected;
+        if (handlers is null) {
+            return;
+        }
+
+        foreach (EventHandler handler in handlers.GetInvocationList()) {
+            _eventDispatcher.TryDispatch(() => handler(this, EventArgs.Empty));
+        }
+    }
+
+    private void PublishMessageReceived(string message) {
+        if (Volatile.Read(ref _isDisposed) == 1) {
+            return;
+        }
+
+        var handlers = MessageReceived;
+        if (handlers is null) {
+            return;
+        }
+
+        foreach (EventHandler<string> handler in handlers.GetInvocationList()) {
+            _eventDispatcher.TryDispatch(() => handler(this, message));
+        }
     }
 
     private static string? TryGetMessage(ReceivedDataEventArgs e) {
@@ -205,6 +282,7 @@ public sealed class DefaultDws : IDws, IDisposable {
     private Task OnServerClientConnected(object client, ConnectedEventArgs e) {
         var id = TryGetClientId(client) ?? Guid.NewGuid().ToString("N");
         _clients[id] = client;
+        Interlocked.Exchange(ref _isConnected, 1);
         _logger.LogInformation("[DWS][SERVER] Client connected: {ClientId}, total={Count}", id, _clients.Count);
         return Task.CompletedTask;
     }
