@@ -140,7 +140,7 @@ public sealed class DefaultDws : IDws, IDisposable {
                     if (!cancellationToken.IsCancellationRequested) {
                         Interlocked.Exchange(ref _isConnected, 0);
                         _logger.LogWarning("[DWS] Client disconnected from {Ip}:{Port}", _config.Ip, _config.Port);
-                        Disconnected?.Invoke(this, EventArgs.Empty);
+                        PublishDisconnected();
                     }
             }
             catch (OperationCanceledException) {
@@ -149,7 +149,7 @@ public sealed class DefaultDws : IDws, IDisposable {
             catch (Exception ex) {
                 Interlocked.Exchange(ref _isConnected, 0);
                 _logger.LogWarning(ex, "[DWS] Client connect failed, will retry: {Ip}:{Port}", _config.Ip, _config.Port);
-                Disconnected?.Invoke(this, EventArgs.Empty);
+                PublishDisconnected();
             }
 
             if (cancellationToken.IsCancellationRequested) {
@@ -202,7 +202,7 @@ public sealed class DefaultDws : IDws, IDisposable {
         var msg = TryGetMessage(e);
         if (!string.IsNullOrWhiteSpace(msg)) {
             _logger.LogInformation("[DWS][RECV][SERVER] {Payload}", Truncate(msg));
-            MessageReceived?.Invoke(null, msg);
+            PublishMessageReceived(msg);
         }
         return Task.CompletedTask;
     }
@@ -211,9 +211,45 @@ public sealed class DefaultDws : IDws, IDisposable {
         var msg = TryGetMessage(e);
         if (!string.IsNullOrWhiteSpace(msg)) {
             _logger.LogInformation("[DWS][RECV][CLIENT] {Payload}", Truncate(msg));
-            MessageReceived?.Invoke(null, msg);
+            PublishMessageReceived(msg);
         }
         return Task.CompletedTask;
+    }
+
+    private void PublishDisconnected() {
+        var handlers = Disconnected;
+        if (handlers is null) {
+            return;
+        }
+
+        foreach (EventHandler handler in handlers.GetInvocationList()) {
+            _ = Task.Run(() => {
+                try {
+                    handler(this, EventArgs.Empty);
+                }
+                catch (Exception ex) {
+                    _logger.LogError(ex, "[DWS] Disconnected 事件订阅者执行失败");
+                }
+            });
+        }
+    }
+
+    private void PublishMessageReceived(string message) {
+        var handlers = MessageReceived;
+        if (handlers is null) {
+            return;
+        }
+
+        foreach (EventHandler<string> handler in handlers.GetInvocationList()) {
+            _ = Task.Run(() => {
+                try {
+                    handler(this, message);
+                }
+                catch (Exception ex) {
+                    _logger.LogError(ex, "[DWS] MessageReceived 事件订阅者执行失败");
+                }
+            });
+        }
     }
 
     private static string? TryGetMessage(ReceivedDataEventArgs e) {

@@ -176,7 +176,7 @@ namespace FjWorkerService1.Servers.Sorter {
                     // 断开
                     if (!cancellationToken.IsCancellationRequested) {
                         _logger.LogWarning("[Sorting] Client disconnected from {Ip}:{Port}", Config.Ip, Config.Port);
-                        Disconnected?.Invoke(this, EventArgs.Empty);
+                        PublishDisconnected();
                     }
                 }
                 catch (OperationCanceledException) {
@@ -184,7 +184,7 @@ namespace FjWorkerService1.Servers.Sorter {
                 }
                 catch (Exception ex) {
                     _logger.LogWarning(ex, "[Sorting] Client connect failed, will retry: {Ip}:{Port}", Config.Ip, Config.Port);
-                    Disconnected?.Invoke(this, EventArgs.Empty);
+                    PublishDisconnected();
                 }
 
                 if (cancellationToken.IsCancellationRequested) {
@@ -323,7 +323,7 @@ namespace FjWorkerService1.Servers.Sorter {
                         var env = JsonConvert.DeserializeObject<ParcelDetectedMessage>(json);
 
                         if (env != null) {
-                            ParcelDetected?.Invoke(this, env);
+                            PublishParcelDetected(env);
                         }
                         break;
                     }
@@ -331,10 +331,64 @@ namespace FjWorkerService1.Servers.Sorter {
                         var env = JsonConvert.DeserializeObject<SortingCompletedMessage>(json);
 
                         if (env != null) {
-                            SortingCompleted?.Invoke(this, env);
+                            PublishSortingCompleted(env);
                         }
                         break;
                     }
+            }
+        }
+
+        private void PublishDisconnected() {
+            var handlers = Disconnected;
+            if (handlers is null) {
+                return;
+            }
+
+            foreach (EventHandler handler in handlers.GetInvocationList()) {
+                _ = Task.Run(() => {
+                    try {
+                        handler(this, EventArgs.Empty);
+                    }
+                    catch (Exception ex) {
+                        _logger.LogError(ex, "[Sorting] Disconnected 事件订阅者执行失败");
+                    }
+                });
+            }
+        }
+
+        private void PublishParcelDetected(ParcelDetectedMessage message) {
+            var handlers = ParcelDetected;
+            if (handlers is null) {
+                return;
+            }
+
+            foreach (EventHandler<ParcelDetectedMessage> handler in handlers.GetInvocationList()) {
+                _ = Task.Run(() => {
+                    try {
+                        handler(this, message);
+                    }
+                    catch (Exception ex) {
+                        _logger.LogError(ex, "[Sorting] ParcelDetected 事件订阅者执行失败");
+                    }
+                });
+            }
+        }
+
+        private void PublishSortingCompleted(SortingCompletedMessage message) {
+            var handlers = SortingCompleted;
+            if (handlers is null) {
+                return;
+            }
+
+            foreach (EventHandler<SortingCompletedMessage> handler in handlers.GetInvocationList()) {
+                _ = Task.Run(() => {
+                    try {
+                        handler(this, message);
+                    }
+                    catch (Exception ex) {
+                        _logger.LogError(ex, "[Sorting] SortingCompleted 事件订阅者执行失败");
+                    }
+                });
             }
         }
 
