@@ -69,7 +69,8 @@ namespace FjWorkerService1.BackgroundServices {
                     if (split.Length > 0) {
                         // 取出并原子更新包裹，避免并发回调对同一对象竞争写入
                         ParcelInfo? value = null;
-                        while (true) {
+                        const int maxUpdateAttempts = 64;
+                        for (var attempt = 0; attempt < maxUpdateAttempts; attempt++) {
                             var now = DateTime.Now;
                             var candidate = _parcelInfos.FirstOrDefault(f =>
                                 string.IsNullOrEmpty(f.Value.Barcode)
@@ -91,6 +92,12 @@ namespace FjWorkerService1.BackgroundServices {
                                 value = updated;
                                 break;
                             }
+
+                            if (attempt == maxUpdateAttempts - 1) {
+                                _logger.LogWarning("并发更新包裹信息达到重试上限，已放弃本次DWS融合。");
+                            }
+
+                            await Task.Yield();
                         }
 
                         if (value is not null) {

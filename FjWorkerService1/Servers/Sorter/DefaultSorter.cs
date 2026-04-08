@@ -16,10 +16,12 @@ namespace FjWorkerService1.Servers.Sorter {
     public class DefaultSorter : ISorter, IDisposable {
         private readonly ILogger<DefaultSorter> _logger;
         private TcpConnectConfig Config { get; init; }
+        private readonly CancellationTokenSource _eventDispatchCts = new();
 
         private TcpService? _server;
         private TcpClient? _client;
         private int _connectStarted;
+        private int _isDisposed;
 
         // TouchSocket 4.0.4: 不同模型下连接对象类型可能不同，这里用 object 存，发送/状态用 dynamic 访问。
         private readonly ConcurrentDictionary<string, object> _clients = new();
@@ -46,6 +48,17 @@ namespace FjWorkerService1.Servers.Sorter {
         public event EventHandler<ParcelDetectedMessage>? ParcelDetected;
 
         public void Dispose() {
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 1) {
+                return;
+            }
+
+            try {
+                _eventDispatchCts.Cancel();
+            }
+            catch {
+                // ignore
+            }
+
             try {
                 var client = Interlocked.Exchange(ref _client, null);
                 if (client != null) {
@@ -65,6 +78,9 @@ namespace FjWorkerService1.Servers.Sorter {
             }
             catch {
                 // ignore
+            }
+            finally {
+                try { _eventDispatchCts.Dispose(); } catch { /* ignore */ }
             }
         }
 
@@ -339,56 +355,95 @@ namespace FjWorkerService1.Servers.Sorter {
         }
 
         private void PublishDisconnected() {
+            if (Volatile.Read(ref _isDisposed) == 1) {
+                return;
+            }
+
             var handlers = Disconnected;
             if (handlers is null) {
                 return;
             }
 
+            var token = _eventDispatchCts.Token;
+            if (token.IsCancellationRequested) {
+                return;
+            }
+
             foreach (EventHandler handler in handlers.GetInvocationList()) {
                 _ = Task.Run(() => {
+                    if (token.IsCancellationRequested) {
+                        return;
+                    }
+
                     try {
                         handler(this, EventArgs.Empty);
                     }
                     catch (Exception ex) {
                         _logger.LogError(ex, "[Sorting] Disconnected 事件订阅者执行失败");
                     }
-                });
+                }, token);
             }
         }
 
         private void PublishParcelDetected(ParcelDetectedMessage message) {
+            if (Volatile.Read(ref _isDisposed) == 1) {
+                return;
+            }
+
             var handlers = ParcelDetected;
             if (handlers is null) {
                 return;
             }
 
+            var token = _eventDispatchCts.Token;
+            if (token.IsCancellationRequested) {
+                return;
+            }
+
             foreach (EventHandler<ParcelDetectedMessage> handler in handlers.GetInvocationList()) {
                 _ = Task.Run(() => {
+                    if (token.IsCancellationRequested) {
+                        return;
+                    }
+
                     try {
                         handler(this, message);
                     }
                     catch (Exception ex) {
                         _logger.LogError(ex, "[Sorting] ParcelDetected 事件订阅者执行失败");
                     }
-                });
+                }, token);
             }
         }
 
         private void PublishSortingCompleted(SortingCompletedMessage message) {
+            if (Volatile.Read(ref _isDisposed) == 1) {
+                return;
+            }
+
             var handlers = SortingCompleted;
             if (handlers is null) {
                 return;
             }
 
+            var token = _eventDispatchCts.Token;
+            if (token.IsCancellationRequested) {
+                return;
+            }
+
             foreach (EventHandler<SortingCompletedMessage> handler in handlers.GetInvocationList()) {
                 _ = Task.Run(() => {
+                    if (token.IsCancellationRequested) {
+                        return;
+                    }
+
                     try {
                         handler(this, message);
                     }
                     catch (Exception ex) {
                         _logger.LogError(ex, "[Sorting] SortingCompleted 事件订阅者执行失败");
                     }
-                });
+                }, token);
             }
         }
 

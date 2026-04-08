@@ -15,9 +15,11 @@ public sealed class DefaultDws : IDws, IDisposable {
     private readonly TcpConnectConfig _config;
     private readonly ILogger<DefaultDws> _logger;
     private readonly ConcurrentDictionary<string, object> _clients = new();
+    private readonly CancellationTokenSource _eventDispatchCts = new();
     private TcpClient? _client;
     private TcpService? _server;
     private int _connectStarted;
+    private int _isDisposed;
 
     private int _isConnected; // 0=false, 1=true
 
@@ -33,6 +35,20 @@ public sealed class DefaultDws : IDws, IDisposable {
     public event EventHandler? Disconnected;
 
     public void Dispose() {
+        if (Interlocked.Exchange(ref _isDisposed, 1) == 1) {
+            return;
+        }
+
+        try {
+            _eventDispatchCts.Cancel();
+        }
+        catch {
+            // ignore
+        }
+        finally {
+            try { _eventDispatchCts.Dispose(); } catch { /* ignore */ }
+        }
+
         // 同步 Dispose 中不执行阻塞关闭，转为异步 best-effort
         _ = SafeDisposeAsync();
     }
@@ -217,38 +233,64 @@ public sealed class DefaultDws : IDws, IDisposable {
     }
 
     private void PublishDisconnected() {
+        if (Volatile.Read(ref _isDisposed) == 1) {
+            return;
+        }
+
         var handlers = Disconnected;
         if (handlers is null) {
             return;
         }
 
+        var token = _eventDispatchCts.Token;
+        if (token.IsCancellationRequested) {
+            return;
+        }
+
         foreach (EventHandler handler in handlers.GetInvocationList()) {
             _ = Task.Run(() => {
+                if (token.IsCancellationRequested) {
+                    return;
+                }
+
                 try {
                     handler(this, EventArgs.Empty);
                 }
                 catch (Exception ex) {
                     _logger.LogError(ex, "[DWS] Disconnected 事件订阅者执行失败");
                 }
-            });
+            }, token);
         }
     }
 
     private void PublishMessageReceived(string message) {
+        if (Volatile.Read(ref _isDisposed) == 1) {
+            return;
+        }
+
         var handlers = MessageReceived;
         if (handlers is null) {
             return;
         }
 
+        var token = _eventDispatchCts.Token;
+        if (token.IsCancellationRequested) {
+            return;
+        }
+
         foreach (EventHandler<string> handler in handlers.GetInvocationList()) {
             _ = Task.Run(() => {
+                if (token.IsCancellationRequested) {
+                    return;
+                }
+
                 try {
                     handler(this, message);
                 }
                 catch (Exception ex) {
                     _logger.LogError(ex, "[DWS] MessageReceived 事件订阅者执行失败");
                 }
-            });
+            }, token);
         }
     }
 
