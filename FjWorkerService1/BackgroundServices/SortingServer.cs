@@ -74,7 +74,7 @@ namespace FjWorkerService1.BackgroundServices {
                         for (var attempt = 0; attempt < ParcelInfoUpdateMaxAttempts; attempt++) {
                             var now = DateTime.Now;
                             var candidate = _parcelInfos.FirstOrDefault(f =>
-                                string.IsNullOrEmpty(f.Value.Barcode)
+                                !f.Value.IsDwsBound
                                 && now.Subtract(f.Value.ScannedAt).TotalMilliseconds < _dataFusionOptions.CurrentValue.Timeout);
                             if (candidate.Value is null) {
                                 break;
@@ -86,7 +86,8 @@ namespace FjWorkerService1.BackgroundServices {
                                 Length = split.Length > 5 ? Convert.ToDecimal(split[2]) : candidate.Value.Length,
                                 Width = split.Length > 5 ? Convert.ToDecimal(split[3]) : candidate.Value.Width,
                                 Height = split.Length > 5 ? Convert.ToDecimal(split[4]) : candidate.Value.Height,
-                                Volume = split.Length > 5 ? Convert.ToDecimal(split[5]) : candidate.Value.Volume
+                                Volume = split.Length > 5 ? Convert.ToDecimal(split[5]) : candidate.Value.Volume,
+                                IsDwsBound = true
                             };
 
                             if (_parcelInfos.TryUpdate(candidate.Key, updated, candidate.Value)) {
