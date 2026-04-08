@@ -48,11 +48,11 @@ namespace FjWorkerService1.BackgroundServices {
             _sorter.ParcelDetected += (sender, message) => {
                 var parcelInfo = new ParcelInfo {
                     ParcelId = message.ParcelId,
-
                     ChuteId = 0,
                     ActualChuteId = 0,
+                    IsDwsBound = false,
                 };
-                _parcelInfos.TryAdd(message.ParcelId, parcelInfo);
+                _parcelInfos.AddOrUpdate(message.ParcelId, parcelInfo, (_, _) => parcelInfo);
                 _logger.LogInformation($"检测到包裹: {JsonConvert.SerializeObject(parcelInfo)}");
             };
             _sorter.SortingCompleted += async (sender, message) => {

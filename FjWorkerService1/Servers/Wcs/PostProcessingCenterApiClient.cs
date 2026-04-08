@@ -393,7 +393,7 @@ public class PostProcessingCenterApiClient : IWcs {
                             PlanId = parts[2],
                             RequestChuteTime = DateTime.Now
                         };
-                        ParcelInfos.TryAdd(Convert.ToInt64(parcelId), parcelInfo);
+                        ParcelInfos.AddOrUpdate(parcelId, parcelInfo, (_, _) => parcelInfo);
                     }
                 }
 
