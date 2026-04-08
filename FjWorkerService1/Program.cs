@@ -19,18 +19,18 @@ var bootstrapLogger = LogManager.GetCurrentClassLogger();
 try {
     var builder = Host.CreateApplicationBuilder(args);
 
-    // Windows ·þÎñ
+    // Windows ï¿½ï¿½ï¿½ï¿½
 
 #if RELEASE
     builder.Services.AddWindowsService(options => { options.ServiceName = "FjWorkerService"; });
 #endif
 
-    // ÇÐ»»µ½ NLog
+    // ï¿½Ð»ï¿½ï¿½ï¿½ NLog
     builder.Logging.ClearProviders();
     builder.Logging.SetMinimumLevel(LogLevel.Information);
     builder.Logging.AddNLog();
 
-    // ======= ÏÂÃæ±£ÁôÄãÏÖÓÐµÄ DI ×¢²á£¨Ô­Ñù£© =======
+    // ======= ï¿½ï¿½ï¿½æ±£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ðµï¿½ DI ×¢ï¿½á£¨Ô­ï¿½ï¿½ï¿½ï¿½ =======
     builder.Services.Configure<LogCleanupSettings>(
         builder.Configuration.GetSection("LogCleanup"));
     builder.Services.AddSingleton<SafeExecutor>();
@@ -38,88 +38,104 @@ try {
     builder.Services
         .AddOptions<DataFusionOptions>()
         .Bind(builder.Configuration.GetSection("DataFusion"))
-        .Validate(o => o.Timeout > 0, "ÅäÖÃÎÞÐ§£ºDataFusion:Timeout ±ØÐë´óÓÚ 0")
+        .Validate(o => o.Timeout > 0, "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð§ï¿½ï¿½DataFusion:Timeout ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ 0")
         .ValidateOnStart();
     builder.Services
         .AddOptions<ImageMonitoringOptions>()
         .Bind(builder.Configuration.GetSection("ImageMonitoring"))
         .ValidateOnStart();
-    /*builder.Services
-        .AddHttpClient<IWcs, PostProcessingCenterApiClient>((sp, client) => {
-            var configuration = sp.GetRequiredService<IConfiguration>();
+    var wcsProvider = builder.Configuration.GetValue<string>("Wcs:Provider")?.Trim();
+    if (string.IsNullOrWhiteSpace(wcsProvider)) {
+        wcsProvider = "PostProcessingCenterApiClient";
+    }
 
-            var url = configuration.GetValue<string>("PostProcessingCenterConfig:Url");
-            if (string.IsNullOrWhiteSpace(url)) {
-                throw new InvalidOperationException("ÅäÖÃÈ±Ê§£ºPostProcessingCenterConfig:Url");
-            }
+    if (wcsProvider.Equals("PostProcessingCenterApiClient", StringComparison.OrdinalIgnoreCase)
+        || wcsProvider.Equals("PostProcessingCenter", StringComparison.OrdinalIgnoreCase)) {
+        builder.Services
+            .AddHttpClient<IWcs, PostProcessingCenterApiClient>((sp, client) => {
+                var configuration = sp.GetRequiredService<IConfiguration>();
 
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var baseUri)) {
-                throw new InvalidOperationException($"ÅäÖÃÎÞÐ§£ºPostProcessingCenterConfig:Url = {url}");
-            }
+                var url = configuration.GetValue<string>("PostProcessingCenterConfig:Url");
+                if (string.IsNullOrWhiteSpace(url)) {
+                    throw new InvalidOperationException("Missing config: PostProcessingCenterConfig:Url");
+                }
 
-            client.BaseAddress = baseUri;
-            client.Timeout = Timeout.InfiniteTimeSpan;
-        });*/
-    builder.Services
-        .AddOptions<AidukOptions>()
-        .Configure<IConfiguration>((opt, cfg) => {
-            opt.BaseUrl =
-                cfg["Aiduk:PostCtnUrl"]
-                ?? cfg["AidukConfig:PostCtnUrl"]
-                ?? cfg["Aiduk:Url"]
-                ?? cfg["AidukConfig:Url"]
-                ?? "https://api.aiduk.cn/v1/postctn";
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var baseUri)) {
+                    throw new InvalidOperationException($"Invalid config: PostProcessingCenterConfig:Url = {url}");
+                }
 
-            opt.Secret =
-                cfg["Aiduk:Secret"]
-                ?? cfg["AidukConfig:Secret"]
-                ?? cfg["Aiduk:secret"]
-                ?? cfg["AidukConfig:secret"]
-                ?? string.Empty;
+                var timeoutMs = configuration.GetValue<int?>("PostProcessingCenterConfig:Timeout") ?? 1000;
+                client.BaseAddress = baseUri;
+                client.Timeout = timeoutMs <= 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(timeoutMs);
+            });
+    }
+    else if (wcsProvider.Equals("AidukApiClient", StringComparison.OrdinalIgnoreCase)
+             || wcsProvider.Equals("Aiduk", StringComparison.OrdinalIgnoreCase)) {
+        builder.Services
+            .AddOptions<AidukOptions>()
+            .Configure<IConfiguration>((opt, cfg) => {
+                opt.BaseUrl =
+                    cfg["Aiduk:PostCtnUrl"]
+                    ?? cfg["AidukConfig:PostCtnUrl"]
+                    ?? cfg["Aiduk:Url"]
+                    ?? cfg["AidukConfig:Url"]
+                    ?? "https://api.aiduk.cn/v1/postctn";
 
-            opt.MachineId =
-                cfg.GetValue<int?>("Aiduk:MachineId")
-                ?? cfg.GetValue<int?>("AidukConfig:MachineId")
-                ?? 0;
+                opt.Secret =
+                    cfg["Aiduk:Secret"]
+                    ?? cfg["AidukConfig:Secret"]
+                    ?? cfg["Aiduk:secret"]
+                    ?? cfg["AidukConfig:secret"]
+                    ?? string.Empty;
 
-            // ¼æÈÝ Timeout / TimeoutMs Á½ÖÖÃüÃû
-            opt.TimeoutMs =
-                cfg.GetValue<int?>("Aiduk:Timeout")
-                ?? cfg.GetValue<int?>("Aiduk:TimeoutMs")
-                ?? cfg.GetValue<int?>("AidukConfig:Timeout")
-                ?? cfg.GetValue<int?>("AidukConfig:TimeoutMs")
-                ?? 1000;
-        })
-        .Validate(o => !string.IsNullOrWhiteSpace(o.BaseUrl), "ÅäÖÃÎÞÐ§£ºAiduk:PostCtnUrl ²»ÄÜÎª¿Õ")
-        .Validate(o => !string.IsNullOrWhiteSpace(o.Secret), "ÅäÖÃÎÞÐ§£ºAiduk:Secret ²»ÄÜÎª¿Õ")
-        .Validate(o => o.TimeoutMs > 0, "ÅäÖÃÎÞÐ§£ºAiduk:Timeout ±ØÐë´óÓÚ 0")
-        .ValidateOnStart();
+                opt.MachineId =
+                    cfg.GetValue<int?>("Aiduk:MachineId")
+                    ?? cfg.GetValue<int?>("AidukConfig:MachineId")
+                    ?? 0;
 
-    builder.Services
-        .AddHttpClient<IWcs, AidukApiClient>((sp, client) => {
-            var opt = sp.GetRequiredService<IOptionsMonitor<AidukOptions>>().CurrentValue;
+                // ï¿½ï¿½ï¿½ï¿½ Timeout / TimeoutMs ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+                opt.TimeoutMs =
+                    cfg.GetValue<int?>("Aiduk:Timeout")
+                    ?? cfg.GetValue<int?>("Aiduk:TimeoutMs")
+                    ?? cfg.GetValue<int?>("AidukConfig:Timeout")
+                    ?? cfg.GetValue<int?>("AidukConfig:TimeoutMs")
+                    ?? 1000;
+            })
+            .Validate(o => !string.IsNullOrWhiteSpace(o.BaseUrl), "Invalid config: Aiduk:PostCtnUrl cannot be empty")
+            .Validate(o => !string.IsNullOrWhiteSpace(o.Secret), "Invalid config: Aiduk:Secret cannot be empty")
+            .Validate(o => o.TimeoutMs > 0, "Invalid config: Aiduk:Timeout must be greater than 0")
+            .ValidateOnStart();
 
-            var url = opt.BaseUrl;
-            if (string.IsNullOrWhiteSpace(url)) {
-                throw new InvalidOperationException("ÅäÖÃÈ±Ê§£ºAiduk:PostCtnUrl");
-            }
+        builder.Services
+            .AddHttpClient<IWcs, AidukApiClient>((sp, client) => {
+                var opt = sp.GetRequiredService<IOptionsMonitor<AidukOptions>>().CurrentValue;
 
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var baseUri)) {
-                throw new InvalidOperationException($"ÅäÖÃÎÞÐ§£ºAiduk:PostCtnUrl = {url}");
-            }
+                var url = opt.BaseUrl;
+                if (string.IsNullOrWhiteSpace(url)) {
+                    throw new InvalidOperationException("Missing config: Aiduk:PostCtnUrl");
+                }
 
-            var secret = opt.Secret?.Trim();
-            if (string.IsNullOrWhiteSpace(secret)) {
-                throw new InvalidOperationException("ÅäÖÃÈ±Ê§£ºAiduk:Secret");
-            }
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var baseUri)) {
+                    throw new InvalidOperationException($"Invalid config: Aiduk:PostCtnUrl = {url}");
+                }
 
-            var timeoutMs = opt.TimeoutMs;
+                var secret = opt.Secret?.Trim();
+                if (string.IsNullOrWhiteSpace(secret)) {
+                    throw new InvalidOperationException("Missing config: Aiduk:Secret");
+                }
 
-            client.BaseAddress = baseUri;
-            client.Timeout = timeoutMs <= 0
-                ? Timeout.InfiniteTimeSpan
-                : TimeSpan.FromMilliseconds(timeoutMs);
-        });
+                var timeoutMs = opt.TimeoutMs;
+
+                client.BaseAddress = baseUri;
+                client.Timeout = timeoutMs <= 0
+                    ? Timeout.InfiniteTimeSpan
+                    : TimeSpan.FromMilliseconds(timeoutMs);
+            });
+    }
+    else {
+        throw new InvalidOperationException(
+            $"Invalid config: Wcs:Provider = {wcsProvider}. Allowed values: PostProcessingCenterApiClient, AidukApiClient");
+    }
 
     const string dwsOptionsName = "Dws";
     const string sorterOptionsName = "Sorter";
@@ -127,15 +143,15 @@ try {
     builder.Services
         .AddOptions<TcpConnectConfig>(dwsOptionsName)
         .Bind(builder.Configuration.GetSection("DwsTcpConnectConfig"))
-        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "ÅäÖÃÎÞÐ§£ºDwsTcpConnectConfig:Ip ²»ÄÜÎª¿Õ")
-        .Validate(c => c.Port is > 0 and <= 65535, "ÅäÖÃÎÞÐ§£ºDwsTcpConnectConfig:Port ·¶Î§±ØÐëÎª 1-65535")
+        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð§ï¿½ï¿½DwsTcpConnectConfig:Ip ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½")
+        .Validate(c => c.Port is > 0 and <= 65535, "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð§ï¿½ï¿½DwsTcpConnectConfig:Port ï¿½ï¿½Î§ï¿½ï¿½ï¿½ï¿½Îª 1-65535")
         .ValidateOnStart();
 
     builder.Services
         .AddOptions<TcpConnectConfig>(sorterOptionsName)
         .Bind(builder.Configuration.GetSection("SorterTcpConnectConfig"))
-        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "ÅäÖÃÎÞÐ§£ºSorterTcpConnectConfig:Ip ²»ÄÜÎª¿Õ")
-        .Validate(c => c.Port is > 0 and <= 65535, "ÅäÖÃÎÞÐ§£ºSorterTcpConnectConfig:Port ·¶Î§±ØÐëÎª 1-65535")
+        .Validate(c => !string.IsNullOrWhiteSpace(c.Ip), "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð§ï¿½ï¿½SorterTcpConnectConfig:Ip ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½")
+        .Validate(c => c.Port is > 0 and <= 65535, "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð§ï¿½ï¿½SorterTcpConnectConfig:Port ï¿½ï¿½Î§ï¿½ï¿½ï¿½ï¿½Îª 1-65535")
         .ValidateOnStart();
 
     builder.Services.AddSingleton<IDws>(sp => {
@@ -150,17 +166,17 @@ try {
         return new DefaultSorter(config, sorterLogger);
     });
     builder.Services.AddHostedService<SortingServer>();
-    //ÈÕÖ¾ÇåÀí·þÎñ
+    //ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     builder.Services.AddHostedService<LogCleanupService>();
-    //Í¼Æ¬ÐÂÔö¼à¿Ø·þÎñ
+    //Í¼Æ¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø·ï¿½ï¿½ï¿½
     builder.Services.AddHostedService<FileSystemImageMonitoringHostedService>();
 
     var host = builder.Build();
     host.Run();
 }
 catch (Exception ex) {
-    // ÕâÀï±ØÐë¶µµ×£¬·ñÔò·þÎñÆô¶¯Ê§°ÜÊ±Ã»ÈÕÖ¾
-    bootstrapLogger.Error(ex, "·þÎñÆô¶¯Ê§°Ü");
+    // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ë¶µï¿½×£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½Ê±Ã»ï¿½ï¿½Ö¾
+    bootstrapLogger.Error(ex, "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½");
     throw;
 }
 finally {
