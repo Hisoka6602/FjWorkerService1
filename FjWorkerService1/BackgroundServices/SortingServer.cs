@@ -120,15 +120,7 @@ namespace FjWorkerService1.BackgroundServices {
                                 Volume = value.Volume,
                                 ScannedAt = DateTime.Now
                             });
-                            _logger.LogInformation($"接口curl:{requestChuteAsync.FormattedCurl}");
-                            _logger.LogInformation($"格式化数据:{requestChuteAsync.FormattedMessage}");
-                            if (requestChuteAsync.RequestStatus == ApiRequestStatus.Success) {
-                                _logger.LogInformation($"接口响应数据:{requestChuteAsync.ResponseBody}");
-                            }
-                            else {
-                                _logger.LogInformation($"接口访问异常状态:{requestChuteAsync.RequestStatus}");
-                                _logger.LogInformation($"接口访问异常:{requestChuteAsync.ErrorMessage}");
-                            }
+                            LogApiResponseSummary("RequestChute", requestChuteAsync, value.ParcelId, value.Barcode);
 
                             if (!string.IsNullOrEmpty(requestChuteAsync.ResponseBody)) {
                                 ChuteIdParser.TryParseChuteNumber(requestChuteAsync.ResponseBody, out var chuteId);
@@ -159,7 +151,7 @@ namespace FjWorkerService1.BackgroundServices {
                     }
                 }
                 catch (Exception e) {
-                    _logger.LogError($"{e}");
+                    _logger.LogError(e, "融合流程发生异常");
                 }
             };
         }
@@ -245,6 +237,56 @@ namespace FjWorkerService1.BackgroundServices {
             catch (Exception ex) {
                 _logger.LogError(ex, "日志清理任务发生异常");
             }
+        }
+
+        private void LogApiResponseSummary(string operation, Models.Wcs.WcsApiResponse response, long parcelId, string? barcode) {
+            var statusCode = response.ResponseStatusCode?.ToString() ?? "-";
+            var message = Truncate(response.FormattedMessage ?? response.ErrorMessage ?? string.Empty, 300);
+            var responsePreview = Truncate(response.ResponseBody ?? string.Empty, 300);
+
+            if (response.RequestStatus == ApiRequestStatus.Success) {
+                _logger.LogInformation(
+                    "[Api][{Operation}] success parcelId={ParcelId} barcode={Barcode} statusCode={StatusCode} durationMs={DurationMs} message={Message}",
+                    operation,
+                    parcelId,
+                    barcode ?? string.Empty,
+                    statusCode,
+                    response.DurationMs,
+                    message);
+                return;
+            }
+
+            if (response.RequestStatus == ApiRequestStatus.Exception) {
+                _logger.LogError(
+                    "[Api][{Operation}] exception parcelId={ParcelId} barcode={Barcode} statusCode={StatusCode} durationMs={DurationMs} message={Message} response={ResponsePreview}",
+                    operation,
+                    parcelId,
+                    barcode ?? string.Empty,
+                    statusCode,
+                    response.DurationMs,
+                    message,
+                    responsePreview);
+                return;
+            }
+
+            _logger.LogWarning(
+                "[Api][{Operation}] failed parcelId={ParcelId} barcode={Barcode} statusCode={StatusCode} durationMs={DurationMs} message={Message} response={ResponsePreview}",
+                operation,
+                parcelId,
+                barcode ?? string.Empty,
+                statusCode,
+                response.DurationMs,
+                message,
+                responsePreview);
+        }
+
+        private static string Truncate(string text, int maxLength) {
+            if (string.IsNullOrWhiteSpace(text)) {
+                return string.Empty;
+            }
+
+            var normalized = text.Replace("\r", " ").Replace("\n", " ");
+            return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "...";
         }
     }
 }

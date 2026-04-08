@@ -1,7 +1,6 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Text;
-using Newtonsoft.Json;
 using System.Threading.Tasks;
 using FjWorkerService1.Enums;
 using System.Collections.Generic;
@@ -130,7 +129,14 @@ namespace FjWorkerService1.BackgroundServices.FileSystemImage {
                     _logger.LogInformation($"条码:{barcodeOrEmpty},图片：{e.Name},上传成功");
                 }
                 else {
-                    _logger.LogError($"图片上传响应:{JsonConvert.SerializeObject(uploadImageAsync, Formatting.Indented)}");
+                    _logger.LogError(
+                        "图片上传失败。条码:{Barcode} 图片:{ImageName} 状态:{Status} HTTP:{HttpStatusCode} 耗时:{DurationMs}ms 错误:{Error}",
+                        barcodeOrEmpty,
+                        e.Name ?? string.Empty,
+                        uploadImageAsync.RequestStatus,
+                        uploadImageAsync.ResponseStatusCode?.ToString() ?? "-",
+                        uploadImageAsync.DurationMs,
+                        uploadImageAsync.ErrorMessage ?? uploadImageAsync.FormattedMessage ?? string.Empty);
                 }
             });
         }

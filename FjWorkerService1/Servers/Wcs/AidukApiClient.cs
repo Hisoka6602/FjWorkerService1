@@ -20,12 +20,12 @@ namespace FjWorkerService1.Servers.Wcs {
 
     public class AidukApiClient : IWcs {
         private readonly HttpClient _httpClient;
-        private readonly ILogger<PostProcessingCenterApiClient> _logger;
+        private readonly ILogger<AidukApiClient> _logger;
         private readonly IOptionsMonitor<AidukOptions> _aidukOptions;
 
         public AidukApiClient(
             HttpClient httpClient,
-            ILogger<PostProcessingCenterApiClient> logger,
+            ILogger<AidukApiClient> logger,
             IOptionsMonitor<AidukOptions> aidukOptions) {
             _httpClient = httpClient;
             _logger = logger;
@@ -147,6 +147,12 @@ namespace FjWorkerService1.Servers.Wcs {
                     args.TimestampSeconds.ToString(CultureInfo.InvariantCulture)));
 
                 var requestUrl = BuildAidukPostCtnUrl(baseUrl, args);
+                _logger.LogInformation(
+                    "[Api][Aiduk][RequestChute][REQ] parcelId={ParcelId} url={Url} barcode={Barcode} machineId={MachineId}",
+                    parcelId,
+                    requestUrl,
+                    args.Barcode,
+                    args.MachineId);
 
                 var requestHeaders = $"Content-Type: application/json\r\nseckey: {secKey}";
 
@@ -191,6 +197,7 @@ namespace FjWorkerService1.Servers.Wcs {
                 if (httpOk && bizOk) {
                     var msg = $"Aiduk 请求格口成功，格口: {chuteId}，业务码: {bizCode}，消息: {bizMsg}";
                     var mergedBody = $"{responseContent}\r\n格口:[{chuteId}]";
+                    LogResponseSummary("RequestChute", ApiRequestStatus.Success, parcelId, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, msg);
                     return new WcsApiResponse {
                         RequestStatus = ApiRequestStatus.Success,
                         FormattedMessage = msg,
@@ -213,6 +220,7 @@ namespace FjWorkerService1.Servers.Wcs {
                 var failMsg = httpOk
                     ? $"Aiduk 请求格口失败，格口: {chuteId}，业务码: {bizCode}，消息: {bizMsg}"
                     : $"Aiduk 请求格口失败，HTTP 状态码: {(int)response.StatusCode}";
+                LogResponseSummary("RequestChute", ApiRequestStatus.Failure, parcelId, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, failMsg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -241,6 +249,7 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 请求格口已取消";
+                _logger.LogWarning("[Api][Aiduk][RequestChute] 已取消 parcelId={ParcelId}", parcelId);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -263,6 +272,7 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 请求格口超时";
+                _logger.LogError("[Api][Aiduk][RequestChute] 超时 parcelId={ParcelId}", parcelId);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -284,6 +294,7 @@ namespace FjWorkerService1.Servers.Wcs {
             }
             catch (Exception ex) {
                 stopwatch.Stop();
+                _logger.LogError(ex, "[Api][Aiduk][RequestChute] 异常 parcelId={ParcelId}", parcelId);
 
                 var detailedMessage = ApiRequestHelper.GetDetailedExceptionMessage(ex);
 
@@ -442,6 +453,12 @@ namespace FjWorkerService1.Servers.Wcs {
                     timestampSeconds.ToString(CultureInfo.InvariantCulture)));
 
                 var requestUrl = BuildAidukUpImgUrl(baseUrl, barcode.Trim(), opt.MachineId, timestampSeconds);
+                _logger.LogInformation(
+                    "[Api][Aiduk][UploadImage][REQ] url={Url} barcode={Barcode} bytes={Bytes} machineId={MachineId}",
+                    requestUrl,
+                    barcode.Trim(),
+                    imageData.Length,
+                    opt.MachineId);
 
                 curl = ApiRequestHelper.GenerateFormattedCurl(
                     "POST",
@@ -494,6 +511,7 @@ namespace FjWorkerService1.Servers.Wcs {
 
                 if (httpOk && bizOk) {
                     var msg = $"Aiduk 上传图片成功，业务码: {bizCode}，消息: {bizMsg}";
+                    LogResponseSummary("UploadImage", ApiRequestStatus.Success, 0, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, msg);
 
                     return new WcsApiResponse {
                         RequestStatus = ApiRequestStatus.Success,
@@ -517,6 +535,7 @@ namespace FjWorkerService1.Servers.Wcs {
                 var failMsg = httpOk
                     ? $"Aiduk 上传图片失败，业务码: {bizCode}，消息: {bizMsg}"
                     : $"Aiduk 上传图片失败，HTTP 状态码: {(int)response.StatusCode}";
+                LogResponseSummary("UploadImage", ApiRequestStatus.Failure, 0, requestUrl, (int)response.StatusCode, stopwatch.ElapsedMilliseconds, failMsg);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Failure,
@@ -545,6 +564,7 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 上传图片已取消";
+                _logger.LogWarning("[Api][Aiduk][UploadImage] 已取消 barcode={Barcode}", barcode);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -567,6 +587,7 @@ namespace FjWorkerService1.Servers.Wcs {
             catch (OperationCanceledException) {
                 stopwatch.Stop();
                 const string msg = "Aiduk 上传图片超时";
+                _logger.LogError("[Api][Aiduk][UploadImage] 超时 barcode={Barcode}", barcode);
 
                 return new WcsApiResponse {
                     RequestStatus = ApiRequestStatus.Exception,
@@ -588,6 +609,7 @@ namespace FjWorkerService1.Servers.Wcs {
             }
             catch (Exception ex) {
                 stopwatch.Stop();
+                _logger.LogError(ex, "[Api][Aiduk][UploadImage] 异常 barcode={Barcode}", barcode);
 
                 var detailedMessage = ApiRequestHelper.GetDetailedExceptionMessage(ex);
 
@@ -863,6 +885,36 @@ namespace FjWorkerService1.Servers.Wcs {
 
             baseUrl = raw;
             return true;
+        }
+
+        private void LogResponseSummary(
+            string operation,
+            ApiRequestStatus status,
+            long parcelId,
+            string requestUrl,
+            int statusCode,
+            long durationMs,
+            string message) {
+            var normalizedMessage = Truncate(message, 300);
+            if (status == ApiRequestStatus.Success) {
+                _logger.LogInformation(
+                    "[Api][Aiduk][{Operation}][RESP] status={Status} parcelId={ParcelId} http={HttpStatusCode} durationMs={DurationMs} url={Url} message={Message}",
+                    operation, status, parcelId, statusCode, durationMs, requestUrl, normalizedMessage);
+                return;
+            }
+
+            _logger.LogWarning(
+                "[Api][Aiduk][{Operation}][RESP] status={Status} parcelId={ParcelId} http={HttpStatusCode} durationMs={DurationMs} url={Url} message={Message}",
+                operation, status, parcelId, statusCode, durationMs, requestUrl, normalizedMessage);
+        }
+
+        private static string Truncate(string text, int maxLength) {
+            if (string.IsNullOrWhiteSpace(text)) {
+                return string.Empty;
+            }
+
+            var normalized = text.Replace("\r", " ").Replace("\n", " ");
+            return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "...";
         }
     }
 }
