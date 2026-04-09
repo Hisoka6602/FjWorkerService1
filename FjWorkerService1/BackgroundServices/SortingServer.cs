@@ -1,5 +1,4 @@
 ﻿using NLog;
-using System.Text;
 using Newtonsoft.Json;
 using System.Globalization;
 using FjWorkerService1.Enums;
@@ -20,10 +19,10 @@ namespace FjWorkerService1.BackgroundServices {
         private static readonly TimeSpan LogRetention = TimeSpan.FromDays(2);
 
         /// <summary>
-        /// 关联号匹配允许误差（毫秒）
-        /// 用于匹配 DWS 第 7 段关联号与 ParcelId 的时间戳差异
+        /// 关联号与包裹 Id 的允许差值
+        /// 用于匹配 DWS 第 7 段关联号与 ParcelId 的数值偏差
         /// </summary>
-        private const long CorrelationIdMatchToleranceMs = 100;
+        private const long CorrelationIdDeltaTolerance = 100;
 
         private readonly IDws _dws;
         private readonly ISorter _sorter;
@@ -160,7 +159,7 @@ namespace FjWorkerService1.BackgroundServices {
                     }
 
                     _logger.LogWarning(
-                        "当前没有可融合包裹，DWS 已暂存。barcode={Barcode} correlationId={CorrelationId}",
+                        "当前没有命中关联号匹配窗口，DWS 已暂存。barcode={Barcode} correlationId={CorrelationId}",
                         dwsMessage!.Barcode,
                         dwsMessage.CorrelationId?.ToString() ?? "null");
                 }
@@ -249,7 +248,7 @@ namespace FjWorkerService1.BackgroundServices {
                 }
 
                 var delta = Math.Abs(correlationId.Value - parcelId);
-                if (delta > CorrelationIdMatchToleranceMs) {
+                if (delta > CorrelationIdDeltaTolerance) {
                     continue;
                 }
 
@@ -270,16 +269,20 @@ namespace FjWorkerService1.BackgroundServices {
         }
 
         private MatchedParcelWorkItem? TryMatchParcelForDwsLocked(DwsInboundMessage dwsMessage, DateTimeOffset now) {
-            if (dwsMessage.CorrelationId.HasValue &&
-                TryFindNearestPendingParcelByCorrelationLocked(dwsMessage.CorrelationId.Value, out var matchedParcelId)) {
-                return BindParcelLocked(matchedParcelId, dwsMessage, now);
+            /// <summary>
+            /// 必须依赖关联号命中待融合包裹
+            /// 不再允许“关联号未命中时直接绑定最老包裹”的兜底行为
+            /// 这样可以避免异常 DWS 将整段包裹顺序整体推偏，造成串票
+            /// </summary>
+            if (!dwsMessage.CorrelationId.HasValue) {
+                return null;
             }
 
-            if (TryGetOldestPendingParcelLocked(out var oldestParcelId)) {
-                return BindParcelLocked(oldestParcelId, dwsMessage, now);
+            if (!TryFindNearestPendingParcelByCorrelationLocked(dwsMessage.CorrelationId.Value, out var matchedParcelId)) {
+                return null;
             }
 
-            return null;
+            return BindParcelLocked(matchedParcelId, dwsMessage, now);
         }
 
         private bool TryFindNearestPendingParcelByCorrelationLocked(long correlationId, out long parcelId) {
@@ -289,7 +292,7 @@ namespace FjWorkerService1.BackgroundServices {
             for (var node = _pendingParcelOrder.First; node is not null; node = node.Next) {
                 var currentParcelId = node.Value;
                 var delta = Math.Abs(currentParcelId - correlationId);
-                if (delta > CorrelationIdMatchToleranceMs) {
+                if (delta > CorrelationIdDeltaTolerance) {
                     continue;
                 }
 
@@ -300,24 +303,6 @@ namespace FjWorkerService1.BackgroundServices {
             }
 
             return bestDelta != long.MaxValue;
-        }
-
-        private bool TryGetOldestPendingParcelLocked(out long parcelId) {
-            parcelId = default;
-
-            var node = _pendingParcelOrder.First;
-            while (node is not null) {
-                if (_parcelInfos.TryGetValue(node.Value, out var parcelInfo) && !parcelInfo.IsDwsBound) {
-                    parcelId = node.Value;
-                    return true;
-                }
-
-                var current = node;
-                node = node.Next;
-                _pendingParcelOrder.Remove(current);
-            }
-
-            return false;
         }
 
         private MatchedParcelWorkItem BindParcelLocked(long parcelId, DwsInboundMessage dwsMessage, DateTimeOffset now) {
