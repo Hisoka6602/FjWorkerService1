@@ -1,7 +1,6 @@
 ﻿using NLog;
 using Newtonsoft.Json;
 using System.Globalization;
-using System.Threading.Channels;
 using FjWorkerService1.Enums;
 using FjWorkerService1.Helpers;
 using FjWorkerService1.Models.Dws;
@@ -63,20 +62,6 @@ namespace FjWorkerService1.BackgroundServices {
         /// </summary>
         private readonly LinkedList<DwsInboundMessage> _pendingDwsOrder = new();
 
-        /// <summary>
-        /// 已匹配包裹的上传工作队列
-        /// 事件处理器将匹配项写入此队列，由后台循环顺序执行 HTTP 上传，避免并发请求堆积
-        /// </summary>
-        private readonly Channel<MatchedParcelWorkItem> _matchedParcelChannel =
-            Channel.CreateUnbounded<MatchedParcelWorkItem>(new UnboundedChannelOptions { SingleReader = true });
-
-        /// <summary>
-        /// 落格通知工作队列
-        /// 事件处理器将落格信息写入此队列，由后台循环顺序执行 HTTP 通知，避免并发请求堆积
-        /// </summary>
-        private readonly Channel<SortingCompletedWorkItem> _sortingCompletedChannel =
-            Channel.CreateUnbounded<SortingCompletedWorkItem>(new UnboundedChannelOptions { SingleReader = true });
-
         public SortingServer(
             IDws dws,
             ISorter sorter,
@@ -96,7 +81,7 @@ namespace FjWorkerService1.BackgroundServices {
                 _logger.LogWarning("分拣程序断开连接");
             };
 
-            _sorter.ParcelDetected += (_, message) => {
+            _sorter.ParcelDetected += async (_, message) => {
                 try {
                     MatchedParcelWorkItem? workItem;
                     ParcelInfo storedParcelInfo;
@@ -112,7 +97,7 @@ namespace FjWorkerService1.BackgroundServices {
                     _logger.LogInformation("检测到包裹: {Payload}", JsonConvert.SerializeObject(storedParcelInfo));
 
                     if (workItem is not null) {
-                        _matchedParcelChannel.Writer.TryWrite(workItem);
+                        await HandleMatchedParcelAsync(workItem).ConfigureAwait(false);
                     }
                 }
                 catch (Exception ex) {
@@ -120,7 +105,7 @@ namespace FjWorkerService1.BackgroundServices {
                 }
             };
 
-            _sorter.SortingCompleted += (_, message) => {
+            _sorter.SortingCompleted += async (_, message) => {
                 try {
                     ParcelInfo? removedParcelInfo = null;
 
@@ -133,7 +118,13 @@ namespace FjWorkerService1.BackgroundServices {
                     }
 
                     if (removedParcelInfo is not null) {
-                        _sortingCompletedChannel.Writer.TryWrite(new SortingCompletedWorkItem(removedParcelInfo, message));
+                        await _wcs.NotifyChuteLandingAsync(
+                                removedParcelInfo.ParcelId,
+                                message.ActualChuteId.ToString(),
+                                removedParcelInfo.Barcode)
+                            .ConfigureAwait(false);
+
+                        _logger.LogInformation("落格回调:{Payload}", JsonConvert.SerializeObject(message));
                     }
                 }
                 catch (Exception ex) {
@@ -141,7 +132,7 @@ namespace FjWorkerService1.BackgroundServices {
                 }
             };
 
-            _dws.MessageReceived += (_, rawMessage) => {
+            _dws.MessageReceived += async (_, rawMessage) => {
                 try {
                     _logger.LogInformation("接收到DWS内容:{Payload}", rawMessage);
 
@@ -163,7 +154,7 @@ namespace FjWorkerService1.BackgroundServices {
                     }
 
                     if (workItem is not null) {
-                        _matchedParcelChannel.Writer.TryWrite(workItem);
+                        await HandleMatchedParcelAsync(workItem).ConfigureAwait(false);
                         return;
                     }
 
@@ -183,9 +174,6 @@ namespace FjWorkerService1.BackgroundServices {
 
             await SafeCleanupLogsAsync(stoppingToken).ConfigureAwait(false);
 
-            var processMatchedTask = ProcessMatchedParcelChannelAsync(stoppingToken);
-            var processSortingCompletedTask = ProcessSortingCompletedChannelAsync(stoppingToken);
-
             using var timer = new PeriodicTimer(LogCleanupInterval);
             while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false)) {
                 await SafeCleanupLogsAsync(stoppingToken).ConfigureAwait(false);
@@ -195,10 +183,6 @@ namespace FjWorkerService1.BackgroundServices {
                     RemoveCompletedRetentionLocked(DateTimeOffset.Now);
                 }
             }
-
-            _matchedParcelChannel.Writer.TryComplete();
-            _sortingCompletedChannel.Writer.TryComplete();
-            await Task.WhenAll(processMatchedTask, processSortingCompletedTask).ConfigureAwait(false);
         }
 
         private void TryStartConnectOnce(CancellationToken stoppingToken) {
@@ -483,29 +467,6 @@ namespace FjWorkerService1.BackgroundServices {
             }
         }
 
-        private async Task ProcessMatchedParcelChannelAsync(CancellationToken stoppingToken) {
-            await foreach (var workItem in _matchedParcelChannel.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false)) {
-                await HandleMatchedParcelAsync(workItem).ConfigureAwait(false);
-            }
-        }
-
-        private async Task ProcessSortingCompletedChannelAsync(CancellationToken stoppingToken) {
-            await foreach (var workItem in _sortingCompletedChannel.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false)) {
-                try {
-                    await _wcs.NotifyChuteLandingAsync(
-                            workItem.ParcelInfo.ParcelId,
-                            workItem.Message.ActualChuteId.ToString(),
-                            workItem.ParcelInfo.Barcode)
-                        .ConfigureAwait(false);
-
-                    _logger.LogInformation("落格回调:{Payload}", JsonConvert.SerializeObject(workItem.Message));
-                }
-                catch (Exception ex) {
-                    _logger.LogError(ex, "处理落格回调发生异常");
-                }
-            }
-        }
-
         private static bool TryParseDwsInboundMessage(
             string rawMessage,
             out DwsInboundMessage? dwsMessage,
@@ -690,16 +651,6 @@ namespace FjWorkerService1.BackgroundServices {
             public required decimal Volume { get; init; }
             public required DateTimeOffset ReceivedAt { get; init; }
             public long? CorrelationId { get; init; }
-        }
-
-        private sealed record class SortingCompletedWorkItem {
-            public SortingCompletedWorkItem(ParcelInfo parcelInfo, SortingCompletedMessage message) {
-                ParcelInfo = parcelInfo;
-                Message = message;
-            }
-
-            public ParcelInfo ParcelInfo { get; }
-            public SortingCompletedMessage Message { get; }
         }
 
         private sealed record class MatchedParcelWorkItem {
